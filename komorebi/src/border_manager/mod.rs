@@ -436,8 +436,8 @@ fn handle_notifications(
                 }
 
                 // Collect focused workspace container and floating windows ID's.
-                // Los bordes flotantes se indexan por el id de ventana como string,
-                // así que hay que incluirlos para no eliminarlos tras crearlos.
+                // Floating borders are keyed by the window id as a string, so we
+                // must include them too or we'd remove them right after creating them.
                 let mut container_and_floating_window_ids = ws
                     .containers()
                     .iter()
@@ -537,10 +537,10 @@ fn handle_notifications(
                     )?;
                 }
 
-                // Eliminar los bordes obsoletos (de otros workspaces) DESPUÉS de
-                // haber creado/actualizado los del workspace actual. destroy_border
-                // hace un sleep(10ms) por borde; si se hiciera antes, los bordes
-                // nuevos tardarían en aparecer tras el cambio de space.
+                // Remove stale borders (from other workspaces) AFTER creating/
+                // updating the current workspace's ones. destroy_border sleeps
+                // 10ms per border; doing it first would delay the new borders
+                // from appearing after a workspace switch.
                 remove_borders(&mut borders, &mut windows_borders, monitor_idx, |id, _| {
                     !container_and_floating_window_ids.contains(id)
                 })?;

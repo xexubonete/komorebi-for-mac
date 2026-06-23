@@ -229,8 +229,8 @@ impl Monitor {
         let offset = self.work_area_offset;
         self.update_workspace_globals(focused_idx, offset);
 
-        // Posicionar ventanas en su grid correcto PRIMERO (pasan de fuera
-        // de pantalla a su posición final directamente, sin paso intermedio).
+        // Position windows at their correct grid slots FIRST (they go from
+        // off-screen straight to their final position, with no intermediate step).
         if let Some(workspace) = self.workspaces_mut().get_mut(focused_idx) {
             workspace.update()?;
 

@@ -1086,7 +1086,7 @@ impl WindowManager {
 
         border_manager::send_notification(window_element, window_id, false);
 
-        // Guardar el mapa ventana→workspace para restaurarlo tras un rset.
+        // Persist the window→workspace map so it can be restored after a rset.
         crate::session::save(self);
 
         Ok(())

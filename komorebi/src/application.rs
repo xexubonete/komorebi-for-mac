@@ -187,10 +187,10 @@ impl Application {
         AccessibilityApi::window_id(window.as_ref()).ok()
     }
 
-    /// Encuentra la ventana cuyo window id de la Accessibility API coincide
-    /// con el número de ventana de CGWindowList. Emparejar por id (no por
-    /// título) permite gestionar varias ventanas de la misma app aunque
-    /// compartan título (p. ej. dos ventanas de Brave).
+    /// Finds the window whose Accessibility API window id matches the
+    /// CGWindowList window number. Matching by id (not by title) lets us
+    /// manage several windows of the same app even when they share a title
+    /// (e.g. two Brave windows).
     pub fn window_by_id(&self, window_id: u32) -> Option<Window> {
         for element in self.window_elements()? {
             if let Ok(id) = AccessibilityApi::window_id(&element)

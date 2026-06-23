@@ -348,12 +348,12 @@ impl MacosApi {
             tracing::info!("{valid_window_count} valid windows identified");
         }
 
-        // Restaurar el mapa ventana→workspace de la sesión anterior.
-        // - rset (apps vivas): empareja por window id (exacto).
-        // - logout/login (mismo arranque, apps reabiertas con ids nuevos):
-        //   empareja por app+título (best-effort).
-        // - reinicio del Mac: load() devuelve None (boot uuid distinto), así
-        //   que cada ventana va a su workspace enfocado por geometría.
+        // Restore the window→workspace map from the previous session.
+        // - rset (apps still alive): match by window id (exact).
+        // - logout/login (same boot, apps reopened with new ids): match by
+        //   app+title (best-effort).
+        // - Mac reboot: load() returns None (different boot uuid), so each
+        //   window goes to its geometry monitor's focused workspace.
         let mut session = crate::session::load();
         if session.is_some() {
             tracing::info!("restoring window layout from previous session");

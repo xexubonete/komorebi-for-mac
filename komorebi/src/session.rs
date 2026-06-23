@@ -1,10 +1,10 @@
-//! Persistencia de sesión: guarda el mapa ventana→workspace para poder
-//! restaurarlo tras un `rset` (reinicio de komorebi con las apps vivas).
+//! Session persistence: stores the window→workspace map so it can be
+//! restored after a `rset` (restarting komorebi while the apps stay alive).
 //!
-//! Solo es fiable mientras las apps no se cierren: los window id de la
-//! Accessibility API son estables durante la vida del proceso, pero cambian
-//! tras reiniciar el Mac o cerrar/abrir la app. Por eso esto cubre el caso
-//! del `rset`, no el del reinicio del sistema.
+//! Only reliable as long as the apps aren't closed: Accessibility API window
+//! ids are stable for the lifetime of a process but change after rebooting the
+//! Mac or quitting/reopening an app. As a fallback we also match by app+title,
+//! which covers logout/login within the same boot (see take_match).
 
 use crate::DATA_DIR;
 use crate::window_manager::WindowManager;
@@ -16,11 +16,11 @@ use std::sync::OnceLock;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct SessionState {
-    /// UUID del arranque del sistema (kern.bootsessionuuid). Solo restauramos
-    /// la sesión si coincide con el arranque actual: tras un reinicio del Mac
-    /// los window id se reasignan y podrían colisionar por azar con ids viejos,
-    /// colocando ventanas en workspaces equivocados. Cambiar de arranque ⇒
-    /// descartar la sesión (las ventanas caen en su workspace por defecto).
+    /// System boot UUID (kern.bootsessionuuid). We only restore the session if
+    /// it matches the current boot: after a Mac reboot window ids are reassigned
+    /// and could collide by chance with old ids, placing windows on the wrong
+    /// workspaces. A different boot ⇒ discard the session (windows fall back to
+    /// their default workspace).
     #[serde(default)]
     pub boot_uuid: String,
     pub windows: Vec<SessionWindow>,
@@ -29,9 +29,9 @@ pub struct SessionState {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SessionWindow {
     pub window_id: u32,
-    /// Nombre de la app (komorebi exe). Permite emparejar por app+título
-    /// cuando el window id ya no sirve (tras logout/login las apps reabren
-    /// con ids nuevos pero el mismo arranque del sistema).
+    /// App name (komorebi exe). Lets us match by app+title when the window id is
+    /// no longer valid (after logout/login the apps reopen with new ids but
+    /// within the same system boot).
     #[serde(default)]
     pub exe: String,
     #[serde(default)]
@@ -41,12 +41,12 @@ pub struct SessionWindow {
 }
 
 impl SessionState {
-    /// Busca el (monitor, workspace) recordado para una ventana y consume la
-    /// entrada (para que dos ventanas no reclamen la misma). Prioridad:
-    ///   1. window id + app  → exacto, caso rset (apps vivas).
-    ///   2. app + título     → best-effort, caso logout/login (ids nuevos).
-    /// Exigir que la app coincida evita colocar mal una ventana si un id nuevo
-    /// colisiona por azar con uno viejo de otra app.
+    /// Finds the remembered (monitor, workspace) for a window and consumes the
+    /// entry (so two windows can't claim the same one). Priority:
+    ///   1. window id + app  → exact, the rset case (apps still alive).
+    ///   2. app + title      → best-effort, the logout/login case (new ids).
+    /// Requiring the app to match avoids misplacing a window if a new id
+    /// collides by chance with an old one from a different app.
     pub fn take_match(&mut self, window_id: u32, exe: &str, title: &str) -> Option<(usize, usize)> {
         if let Some(pos) = self
             .windows
@@ -75,10 +75,10 @@ fn session_path() -> PathBuf {
     DATA_DIR.join("komorebi.session.json")
 }
 
-/// UUID del arranque actual del sistema, vía `sysctl -n kern.bootsessionuuid`.
-/// Estable durante todo el arranque (sobrevive a un `rset`) y distinto tras
-/// reiniciar. Sin dependencias extra. Se calcula una sola vez (no cambia
-/// durante la vida del proceso) porque save() se invoca en cada evento.
+/// Current system boot UUID, via `sysctl -n kern.bootsessionuuid`. Stable for
+/// the whole boot (survives a `rset`) and different after a reboot. No extra
+/// dependencies. Computed once (it doesn't change during the process lifetime)
+/// because save() is called on every event.
 fn boot_uuid() -> Option<String> {
     static CACHED: OnceLock<Option<String>> = OnceLock::new();
 
@@ -99,16 +99,16 @@ fn boot_uuid() -> Option<String> {
         .clone()
 }
 
-// Cache de lo último escrito para no reescribir el archivo si nada cambió.
+// Last written contents, cached to avoid rewriting the file when nothing changed.
 static LAST_WRITTEN: Mutex<Option<String>> = Mutex::new(None);
 
-/// Lee el estado de sesión guardado, si lo hay y es del arranque actual.
+/// Reads the saved session state, if any and if it belongs to the current boot.
 pub fn load() -> Option<SessionState> {
     let contents = std::fs::read_to_string(session_path()).ok()?;
     let state: SessionState = serde_json::from_str(&contents).ok()?;
 
-    // Solo válida dentro del mismo arranque (caso rset). Tras reiniciar el
-    // Mac, descartamos la sesión para no colocar ventanas por ids colisionados.
+    // Only valid within the same boot (the rset case). After a Mac reboot we
+    // discard the session so windows aren't placed by collided ids.
     match boot_uuid() {
         Some(current) if current == state.boot_uuid => Some(state),
         _ => {
@@ -118,7 +118,7 @@ pub fn load() -> Option<SessionState> {
     }
 }
 
-/// Construye el estado actual y lo guarda en disco (solo si cambió).
+/// Builds the current state and writes it to disk (only if it changed).
 pub fn save(wm: &WindowManager) {
     let state = build(wm);
 

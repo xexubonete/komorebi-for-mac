@@ -193,7 +193,7 @@ impl RenderDispatcher for MovementRenderDispatcher {
     }
 
     fn post_render(&self) -> eyre::Result<()> {
-        // Posición final exacta vía AX para que la app sincronice su estado interno
+        // Exact final position via AX so the app syncs its internal state
         with_enhanced_ui_disabled(&self.element, || {
             let _ = AccessibilityApi::set_attribute_ax_value(
                 &self.element,
@@ -216,7 +216,7 @@ impl RenderDispatcher for MovementRenderDispatcher {
             );
         });
 
-        // Restaurar notificaciones de movimiento/redimensión
+        // Restore move/resize notifications
         if let Some(observer) = &self.observer.0 {
             let _ = AccessibilityApi::add_notification_to_observer(
                 observer,
@@ -537,9 +537,8 @@ impl Window {
                 rect.origin.y,
             );
 
-            // EUI desactivado para que el ocultado sea instantáneo y no
-            // anime la ventana saliendo de pantalla (mismo motivo que en
-            // set_position_direct).
+            // EUI disabled so hiding is instant and the window doesn't animate
+            // as it moves off-screen (same reason as in set_position_direct).
             with_enhanced_ui_disabled(&self.element, || {
                 self.set_point(hidden_rect.origin, true)?;
                 self.set_size(hidden_rect.size, true)
@@ -684,12 +683,12 @@ impl Window {
     }
 
     fn set_position_direct(&self, rect: &Rect) -> Result<(), AccessibilityError> {
-        // Desactivar AXEnhancedUserInterface durante el movimiento: si está
-        // activo (lo activa macOS al conectarse un cliente de accesibilidad),
-        // la propia app anima el cambio de posición/tamaño con su animación
-        // implícita (~200 ms), independiente y fuera de nuestro control. Eso
-        // provoca el renderizado escalonado al cambiar de space. Con EUI
-        // desactivado el movimiento es instantáneo y síncrono.
+        // Disable AXEnhancedUserInterface during the move: when it's on (macOS
+        // enables it when an accessibility client connects), the app animates
+        // the position/size change with its own implicit animation (~200ms),
+        // independent and outside our control. That causes the staggered
+        // rendering when switching spaces. With EUI off the move is instant
+        // and synchronous.
         with_enhanced_ui_disabled(&self.element, || {
             self.set_point(
                 CGPoint::new(rect.left as CGFloat, rect.top as CGFloat),
