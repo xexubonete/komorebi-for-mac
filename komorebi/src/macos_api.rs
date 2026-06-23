@@ -17,6 +17,7 @@ use crate::ioreg::IoReg;
 use crate::monitor::Monitor;
 use crate::monitor::MonitorInfo;
 use crate::window::RuleDebug;
+use crate::window::Window;
 use crate::window::WindowInfo;
 use crate::window_manager::WindowManager;
 use color_eyre::eyre;
@@ -303,13 +304,13 @@ impl MacosApi {
     #[tracing::instrument(skip_all)]
     pub fn load_workspace_information(wm: &mut WindowManager) -> Result<(), LibraryError> {
         let mut monitor_size_map = HashMap::new();
-        let mut monitor_workspace_map = HashMap::new();
-        let mut monitor_window_map = HashMap::new();
+        let mut monitor_focused_ws = HashMap::new();
+        let mut monitor_window_map: HashMap<usize, Vec<Window>> = HashMap::new();
         let mut valid_window_count = 0;
 
-        for (idx, monitor) in wm.monitors.elements_mut().iter_mut().enumerate() {
+        for (idx, monitor) in wm.monitors.elements().iter().enumerate() {
             monitor_size_map.insert(idx, monitor.size);
-            monitor_workspace_map.insert(idx, monitor.focused_workspace_mut());
+            monitor_focused_ws.insert(idx, monitor.focused_workspace_idx());
         }
 
         if let Some(window_list_info) = CoreGraphicsApi::window_list_info() {
@@ -321,10 +322,6 @@ impl MacosApi {
 
                     for (monitor_idx, monitor_size) in &monitor_size_map {
                         if monitor_size.contains(&window_rect) {
-                            let entry = monitor_window_map
-                                .entry(monitor_idx)
-                                .or_insert_with(Vec::new);
-
                             let application = match wm.applications.entry(info.owner_pid) {
                                 Entry::Occupied(entry) => entry.into_mut(),
                                 Entry::Vacant(vacant) => {
@@ -335,11 +332,11 @@ impl MacosApi {
                                 }
                             };
 
-                            if let Some(window) = application.window_by_title(&info.name) {
+                            if let Some(window) = application.window_by_id(info.window_id) {
                                 let mut rule_debug = RuleDebug::default();
                                 if window.should_manage(None, &mut rule_debug)? {
                                     window.observe(&wm.run_loop, None)?;
-                                    entry.push(window);
+                                    monitor_window_map.entry(*monitor_idx).or_default().push(window);
                                     valid_window_count += 1
                                 }
                             }
@@ -351,12 +348,44 @@ impl MacosApi {
             tracing::info!("{valid_window_count} valid windows identified");
         }
 
-        for (monitor_idx, windows) in monitor_window_map {
-            for window in windows {
-                let mut container = Container::default();
+        // Restaurar el mapa ventana→workspace de la sesión anterior.
+        // - rset (apps vivas): empareja por window id (exacto).
+        // - logout/login (mismo arranque, apps reabiertas con ids nuevos):
+        //   empareja por app+título (best-effort).
+        // - reinicio del Mac: load() devuelve None (boot uuid distinto), así
+        //   que cada ventana va a su workspace enfocado por geometría.
+        let mut session = crate::session::load();
+        if session.is_some() {
+            tracing::info!("restoring window layout from previous session");
+        }
 
+        for (geom_monitor_idx, windows) in monitor_window_map {
+            let fallback_ws = monitor_focused_ws
+                .get(&geom_monitor_idx)
+                .copied()
+                .unwrap_or(0);
+
+            for window in windows {
+                let exe = window.exe().unwrap_or_default();
+                let title = window.title().unwrap_or_default();
+
+                let (target_monitor, target_ws) = session
+                    .as_mut()
+                    .and_then(|s| s.take_match(window.id, &exe, &title))
+                    .filter(|(m, w)| {
+                        wm.monitors
+                            .elements()
+                            .get(*m)
+                            .is_some_and(|mon| *w < mon.workspaces().len())
+                    })
+                    .unwrap_or((geom_monitor_idx, fallback_ws));
+
+                let mut container = Container::default();
                 container.windows_mut().push_back(window);
-                if let Some(Some(workspace)) = monitor_workspace_map.get_mut(monitor_idx) {
+
+                if let Some(monitor) = wm.monitors.elements_mut().get_mut(target_monitor)
+                    && let Some(workspace) = monitor.workspaces_mut().get_mut(target_ws)
+                {
                     workspace.containers_mut().push_back(container);
                 }
             }

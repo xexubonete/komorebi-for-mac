@@ -80,6 +80,7 @@ use objc2_core_foundation::CGSize;
 use objc2_core_graphics::kCGWindowAlpha;
 use objc2_core_graphics::kCGWindowBounds;
 use objc2_core_graphics::kCGWindowName;
+use objc2_core_graphics::kCGWindowNumber;
 use objc2_core_graphics::kCGWindowOwnerName;
 use objc2_core_graphics::kCGWindowOwnerPID;
 use objc2_foundation::NSBundle;
@@ -281,6 +282,7 @@ pub struct WindowInfo {
     owner_name: String,
     alpha: f32,
     bounds: WindowBounds,
+    window_id: Option<u32>,
 }
 
 impl WindowInfo {
@@ -297,11 +299,13 @@ pub struct ValidWindowInfo {
     owner_name: String,
     alpha: f32,
     pub bounds: WindowBounds,
+    pub window_id: u32,
 }
 
 impl WindowInfo {
     pub fn validated(self) -> Option<ValidWindowInfo> {
         if let Some(name) = self.name
+            && let Some(window_id) = self.window_id
             && self.alpha != 0.0
             && self.bounds.y != 0.0
             && self.bounds.height != 0.0
@@ -313,6 +317,7 @@ impl WindowInfo {
                 owner_name: self.owner_name,
                 alpha: self.alpha,
                 bounds: self.bounds,
+                window_id,
             });
         }
 
@@ -1211,6 +1216,9 @@ impl From<&CFDictionary> for WindowInfo {
                 } else {
                     Default::default()
                 },
+                window_id: cf_dictionary_value::<CFNumber>(value, kCGWindowNumber)
+                    .and_then(|n| n.as_ref().as_i64())
+                    .map(|n| n as u32),
             }
         }
     }

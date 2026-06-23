@@ -271,6 +271,17 @@ fn main() -> eyre::Result<()> {
 
     wm.lock().retile_all(false)?;
 
+    // Tras restaurar la sesión, las ventanas pueden estar repartidas en varios
+    // workspaces. retile_all solo tila el enfocado; aquí ocultamos (sacamos de
+    // pantalla) las ventanas de los workspaces no enfocados en cada monitor.
+    {
+        let mut wm = wm.lock();
+        let mouse_follows_focus = wm.mouse_follows_focus;
+        for monitor in wm.monitors_mut() {
+            monitor.load_focused_workspace(mouse_follows_focus)?;
+        }
+    }
+
     border_manager::listen_for_notifications(wm.clone(), CoreFoundationRunLoop(run_loop));
     theme_manager::listen_for_notifications();
     monitor_reconciliator::listen_for_notifications(wm.clone())?;

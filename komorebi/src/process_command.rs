@@ -1896,6 +1896,7 @@ pub fn read_commands_uds(
                 }
 
                 wm.process_command(message.clone(), &mut stream)?;
+                crate::session::save(&wm);
             }
         }
     }
