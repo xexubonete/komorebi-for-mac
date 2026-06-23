@@ -101,6 +101,7 @@ use std::ptr::NonNull;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
 use strum::Display;
 use strum::EnumString;
 use tracing::instrument;
@@ -171,9 +172,7 @@ impl RenderDispatcher for MovementRenderDispatcher {
     fn render(&self, progress: f64) -> eyre::Result<()> {
         let new_rect = self.start_rect.lerp(self.target_rect, progress, self.style);
 
-        // Use with_enhanced_ui_disabled for better performance during animation
         with_enhanced_ui_disabled(&self.element, || {
-            // Set position
             let _ = AccessibilityApi::set_attribute_ax_value(
                 &self.element,
                 kAXPositionAttribute,
@@ -181,7 +180,6 @@ impl RenderDispatcher for MovementRenderDispatcher {
                 CGPoint::new(new_rect.left as CGFloat, new_rect.top as CGFloat),
             );
 
-            // Set size
             let _ = AccessibilityApi::set_attribute_ax_value(
                 &self.element,
                 kAXSizeAttribute,
@@ -194,7 +192,7 @@ impl RenderDispatcher for MovementRenderDispatcher {
     }
 
     fn post_render(&self) -> eyre::Result<()> {
-        // Ensure final position is exact
+        // Posición final exacta vía AX para que la app sincronice su estado interno
         with_enhanced_ui_disabled(&self.element, || {
             let _ = AccessibilityApi::set_attribute_ax_value(
                 &self.element,
@@ -217,7 +215,7 @@ impl RenderDispatcher for MovementRenderDispatcher {
             );
         });
 
-        // Restore move/resize notifications after animation completes
+        // Restaurar notificaciones de movimiento/redimensión
         if let Some(observer) = &self.observer.0 {
             let _ = AccessibilityApi::add_notification_to_observer(
                 observer,
@@ -534,8 +532,13 @@ impl Window {
                 rect.origin.y,
             );
 
-            self.set_point(hidden_rect.origin, true)?;
-            self.set_size(hidden_rect.size, true)?;
+            // EUI desactivado para que el ocultado sea instantáneo y no
+            // anime la ventana saliendo de pantalla (mismo motivo que en
+            // set_position_direct).
+            with_enhanced_ui_disabled(&self.element, || {
+                self.set_point(hidden_rect.origin, true)?;
+                self.set_size(hidden_rect.size, true)
+            })?;
         }
 
         Ok(())
@@ -676,14 +679,22 @@ impl Window {
     }
 
     fn set_position_direct(&self, rect: &Rect) -> Result<(), AccessibilityError> {
-        self.set_point(
-            CGPoint::new(rect.left as CGFloat, rect.top as CGFloat),
-            true,
-        )?;
-        self.set_size(
-            CGSize::new(rect.right as CGFloat, rect.bottom as CGFloat),
-            true,
-        )
+        // Desactivar AXEnhancedUserInterface durante el movimiento: si está
+        // activo (lo activa macOS al conectarse un cliente de accesibilidad),
+        // la propia app anima el cambio de posición/tamaño con su animación
+        // implícita (~200 ms), independiente y fuera de nuestro control. Eso
+        // provoca el renderizado escalonado al cambiar de space. Con EUI
+        // desactivado el movimiento es instantáneo y síncrono.
+        with_enhanced_ui_disabled(&self.element, || {
+            self.set_point(
+                CGPoint::new(rect.left as CGFloat, rect.top as CGFloat),
+                true,
+            )?;
+            self.set_size(
+                CGSize::new(rect.right as CGFloat, rect.bottom as CGFloat),
+                true,
+            )
+        })
     }
 
     fn set_position_animated(&self, target_rect: &Rect) -> Result<(), AccessibilityError> {

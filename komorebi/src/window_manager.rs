@@ -1309,7 +1309,11 @@ impl WindowManager {
         monitor.focus_workspace(idx)?;
         monitor.load_focused_workspace(mouse_follows_focus)?;
 
-        self.update_focused_workspace(false, true)
+        crate::border_manager::event_tx()
+            .try_send(crate::border_manager::Notification::ForceUpdate)
+            .ok();
+
+        Ok(())
     }
 
     #[tracing::instrument(skip(self))]
@@ -1329,7 +1333,9 @@ impl WindowManager {
         monitor.move_container_to_workspace(idx, follow, direction)?;
         monitor.load_focused_workspace(mouse_follows_focus)?;
 
-        self.update_focused_workspace(mouse_follows_focus, true)?;
+        crate::border_manager::event_tx()
+            .try_send(crate::border_manager::Notification::ForceUpdate)
+            .ok();
 
         Ok(())
     }

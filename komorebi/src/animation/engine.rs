@@ -95,11 +95,18 @@ impl AnimationEngine {
                     animation_start.elapsed().as_millis() as f64 / duration.as_millis() as f64;
                 render_dispatcher.render(progress).ok();
 
-                // sleep until next frame
+                // sleep hasta el siguiente frame con spin-wait final para
+                // precisión sub-ms (thread::sleep tiene jitter de ±3ms en macOS)
                 let frame_time_elapsed = frame_start.elapsed();
-
                 if frame_time_elapsed < target_frame_time {
-                    std::thread::sleep(target_frame_time - frame_time_elapsed);
+                    let remaining = target_frame_time - frame_time_elapsed;
+                    const SPIN_THRESHOLD: Duration = Duration::from_millis(3);
+                    if remaining > SPIN_THRESHOLD {
+                        std::thread::sleep(remaining - SPIN_THRESHOLD);
+                    }
+                    while frame_start.elapsed() < target_frame_time {
+                        std::hint::spin_loop();
+                    }
                 }
             }
 

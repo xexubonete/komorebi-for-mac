@@ -14,7 +14,7 @@ use objc2::rc::Retained;
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSBackingStoreType;
 use objc2_app_kit::NSColor;
-use objc2_app_kit::NSNormalWindowLevel;
+use objc2_app_kit::NSFloatingWindowLevel;
 use objc2_app_kit::NSView;
 use objc2_app_kit::NSWindow;
 use objc2_app_kit::NSWindowAnimationBehavior;
@@ -77,7 +77,7 @@ impl NsWindow {
 
                 window.setHasShadow(false);
                 window.setOpaque(false);
-                window.setLevel(NSNormalWindowLevel);
+                window.setLevel(NSFloatingWindowLevel);
                 window.setIgnoresMouseEvents(true);
 
                 window.setCollectionBehavior(

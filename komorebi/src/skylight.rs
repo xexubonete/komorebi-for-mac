@@ -12,4 +12,9 @@ unsafe extern "C" {
     pub fn SLSDisableUpdate(cid: i32) -> i32;
     // SLSReenableUpdate resumes compositing - all batched changes appear at once
     pub fn SLSReenableUpdate(cid: i32) -> i32;
+
+    // Compositor-level window move — bypasses Accessibility API IPC,
+    // operates directly on the window server for sub-frame latency.
+    // point is (x, y) in CG screen coordinates (origin top-left).
+    pub fn SLSMoveWindow(cid: i32, wid: u32, point: *const objc2_core_foundation::CGPoint) -> i32;
 }

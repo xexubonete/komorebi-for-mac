@@ -74,7 +74,7 @@ pub fn channel() -> &'static (Sender<Notification>, Receiver<Notification>) {
     CHANNEL.get_or_init(|| crossbeam_channel::bounded(50))
 }
 
-fn event_tx() -> Sender<Notification> {
+pub fn event_tx() -> Sender<Notification> {
     channel().0.clone()
 }
 
@@ -435,16 +435,16 @@ fn handle_notifications(
                     continue 'monitors;
                 }
 
-                // Collect focused workspace container and floating windows ID's
-                let container_and_floating_window_ids = ws
+                // Collect focused workspace container and floating windows ID's.
+                // Los bordes flotantes se indexan por el id de ventana como string,
+                // así que hay que incluirlos para no eliminarlos tras crearlos.
+                let mut container_and_floating_window_ids = ws
                     .containers()
                     .iter()
                     .map(|c| c.id.clone())
                     .collect::<Vec<_>>();
-
-                remove_borders(&mut borders, &mut windows_borders, monitor_idx, |id, _| {
-                    !container_and_floating_window_ids.contains(id)
-                })?;
+                container_and_floating_window_ids
+                    .extend(ws.floating_windows().iter().map(|w| w.id.to_string()));
 
                 for (idx, c) in ws.containers().iter().enumerate() {
                     if let Some(window) = c.focused_window() {
@@ -536,6 +536,14 @@ fn handle_notifications(
                         run_loop.clone(),
                     )?;
                 }
+
+                // Eliminar los bordes obsoletos (de otros workspaces) DESPUÉS de
+                // haber creado/actualizado los del workspace actual. destroy_border
+                // hace un sleep(10ms) por borde; si se hiciera antes, los bordes
+                // nuevos tardarían en aparecer tras el cambio de space.
+                remove_borders(&mut borders, &mut windows_borders, monitor_idx, |id, _| {
+                    !container_and_floating_window_ids.contains(id)
+                })?;
             }
         }
 

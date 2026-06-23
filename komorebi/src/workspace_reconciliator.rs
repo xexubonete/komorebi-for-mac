@@ -133,6 +133,24 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 monitor.focus_workspace(notification.workspace_idx)?;
                 monitor.load_focused_workspace(mouse_follows_focus)?;
             }
+
+            if let Some(window_id) = notification.triggered_by.window_id() {
+                if let Ok(workspace) = wm.focused_workspace_mut() {
+                    let _ = workspace.focus_container_by_window(window_id);
+                }
+
+                if let Ok(workspace) = wm.focused_workspace() {
+                    if let Some(container) = workspace.focused_container() {
+                        if let Some(window) = container.focused_window() {
+                            let _ = window.focus(mouse_follows_focus);
+                        }
+                    }
+                }
+            }
+
+            crate::border_manager::event_tx()
+                .try_send(crate::border_manager::Notification::ForceUpdate)
+                .ok();
         }
 
         let now = SystemTime::now()

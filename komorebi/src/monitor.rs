@@ -226,18 +226,40 @@ impl Monitor {
         let monitor_id = self.id;
         let monitor_wp = self.wallpaper.clone();
 
-        let mut restore = None;
+        let offset = self.work_area_offset;
+        self.update_workspace_globals(focused_idx, offset);
 
-        for (i, workspace) in self.workspaces_mut().iter_mut().enumerate() {
-            if i == focused_idx {
-                restore = Some(workspace);
-            } else {
-                workspace.hide(None)?;
+        // Posicionar ventanas en su grid correcto PRIMERO (pasan de fuera
+        // de pantalla a su posición final directamente, sin paso intermedio).
+        if let Some(workspace) = self.workspaces_mut().get_mut(focused_idx) {
+            workspace.update()?;
+
+            for window in workspace.floating_windows_mut() {
+                window.restore()?;
             }
+
+            if let Some(container) = &mut workspace.monocle_container {
+                container.restore()?;
+                if let Some(window) = container.focused_window() {
+                    window.focus(mouse_follows_focus)?;
+                }
+            } else if matches!(workspace.layer, WorkspaceLayer::Tiling) {
+                if let Some(container) = workspace.focused_container() {
+                    if let Some(window) = container.focused_window() {
+                        window.focus(mouse_follows_focus)?;
+                    }
+                }
+            } else if let Some(window) = workspace.focused_floating_window() {
+                window.focus(mouse_follows_focus)?;
+            }
+
+            workspace.apply_wallpaper(monitor_id, &monitor_wp)?;
         }
 
-        if let Some(workspace) = restore {
-            workspace.restore(mouse_follows_focus, monitor_id, &monitor_wp)?;
+        for (i, workspace) in self.workspaces_mut().iter_mut().enumerate() {
+            if i != focused_idx {
+                workspace.hide(None)?;
+            }
         }
 
         Ok(())
