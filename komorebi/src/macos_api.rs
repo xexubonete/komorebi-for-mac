@@ -372,22 +372,38 @@ impl MacosApi {
                 let (target_monitor, target_ws) = session
                     .as_mut()
                     .and_then(|s| s.take_match(window.id, &exe, &title))
-                    .filter(|(m, w)| {
-                        wm.monitors
-                            .elements()
-                            .get(*m)
-                            .is_some_and(|mon| *w < mon.workspaces().len())
-                    })
+                    .filter(|(m, _)| wm.monitors.elements().get(*m).is_some())
                     .unwrap_or((geom_monitor_idx, fallback_ws));
 
                 let mut container = Container::default();
                 container.windows_mut().push_back(window);
 
-                if let Some(monitor) = wm.monitors.elements_mut().get_mut(target_monitor)
-                    && let Some(workspace) = monitor.workspaces_mut().get_mut(target_ws)
-                {
-                    workspace.containers_mut().push_back(container);
+                if let Some(monitor) = wm.monitors.elements_mut().get_mut(target_monitor) {
+                    // The session may reference a workspace index that doesn't exist yet
+                    // because postload() creates workspaces AFTER init() runs. Create the
+                    // workspace on demand so the session can place the window correctly;
+                    // postload() will apply its config over it later (ensure_workspace_count
+                    // is idempotent).
+                    monitor.ensure_workspace_count(target_ws + 1);
+                    if let Some(workspace) = monitor.workspaces_mut().get_mut(target_ws) {
+                        workspace.containers_mut().push_back(container);
+                    }
                 }
+            }
+        }
+
+        // Keep unmatched session entries for late-arriving windows. After
+        // logout/login, apps reopen asynchronously — most arrive as Show events
+        // in process_event AFTER init completes. pending_session lets
+        // process_event place those windows in their remembered workspace
+        // instead of the focused one.
+        if let Some(s) = session {
+            if !s.windows.is_empty() {
+                tracing::info!(
+                    "{} session entries pending (apps not yet started)",
+                    s.windows.len()
+                );
+                wm.pending_session = Some(s);
             }
         }
 

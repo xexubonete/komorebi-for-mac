@@ -86,6 +86,10 @@ pub struct WindowManager {
     pub already_moved_window_handles: Arc<Mutex<HashSet<u32>>>,
     /// Maps each known window id to the (monitor, workspace) index pair managing it
     pub known_window_ids: HashMap<u32, (usize, usize)>,
+    /// Leftover session entries not yet matched during init. When a new window
+    /// appears via a Show event (e.g. apps reopening after logout/login), we
+    /// check here before defaulting to the focused workspace.
+    pub pending_session: Option<crate::session::SessionState>,
 }
 
 impl_ring_elements!(WindowManager, Monitor);
@@ -169,6 +173,7 @@ impl WindowManager {
             pending_resize_op: Arc::new(None),
             already_moved_window_handles: Default::default(),
             known_window_ids: Default::default(),
+            pending_session: None,
         })
     }
 

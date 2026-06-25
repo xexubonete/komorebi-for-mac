@@ -544,6 +544,54 @@ impl WindowManager {
                     && let Ok(mut window) = Window::new(element, application.clone())
                 {
                     window.observe(&self.run_loop, None)?;
+
+                    // Check if this window belongs to a different workspace
+                    // from a previous session (logout/login: apps reopen after
+                    // komorebi init, arriving as Show events).
+                    let session_target = self.pending_session.as_mut().and_then(|s| {
+                        let exe = window.exe().unwrap_or_default();
+                        let title = window.title().unwrap_or_default();
+                        s.take_match(window.id, &exe, &title)
+                    });
+
+                    if let Some((target_m, target_ws)) = session_target {
+                        tracing::info!(
+                            "session: placing late window (id={}, exe={}) on monitor {} workspace {}",
+                            window.id,
+                            window.exe().unwrap_or_default(),
+                            target_m,
+                            target_ws,
+                        );
+
+                        if let Some(monitor) = self.monitors.elements_mut().get_mut(target_m) {
+                            monitor.ensure_workspace_count(target_ws + 1);
+                            if let Some(workspace) = monitor.workspaces_mut().get_mut(target_ws) {
+                                let mut container = crate::container::Container::default();
+                                container.windows_mut().push_back(window.clone());
+                                workspace.containers_mut().push_back(container);
+                            }
+
+                            let is_focused = target_m == focused_monitor_idx
+                                && target_ws == focused_workspace_idx;
+                            if is_focused {
+                                let mouse = self.mouse_follows_focus;
+                                monitor.load_focused_workspace(mouse)?;
+                            } else {
+                                let hiding_pos = monitor.window_hiding_position;
+                                window.hide(hiding_pos)?;
+                            }
+                        }
+
+                        if let Some(s) = &self.pending_session {
+                            if s.windows.is_empty() {
+                                self.pending_session = None;
+                            }
+                        }
+
+                        crate::session::save(self);
+                        border_manager::send_notification(None, None, false);
+                    } else {
+
                     let behaviour = self
                         .window_management_behaviour(focused_monitor_idx, focused_workspace_idx);
                     let workspace = self.focused_workspace_mut()?;
@@ -662,10 +710,7 @@ impl WindowManager {
                         }
                     }
 
-                    // let workspace = self.focused_workspace_mut()?;
-                    // workspace.new_container_for_window(&window)?;
-                    //
-                    // self.update_focused_workspace(false, false)?;
+                    } // else (no session target — normal flow)
                 }
             }
             WindowManagerEvent::Destroy(notification, process_id) => {
