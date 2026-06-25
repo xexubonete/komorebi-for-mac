@@ -48,21 +48,39 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 
 fn check_permissions() -> eyre::Result<()> {
-    unsafe {
-        // check for screen capture access - this is needed to read window titles
-        if !CGPreflightScreenCaptureAccess() {
-            // if providing the dialog box failed, exit
-            if !CGRequestScreenCaptureAccess() {
-                eyre::bail!("failed to request screen capability");
-            }
+    // When launched via LaunchAgent at login, the WindowServer may not be
+    // fully ready yet. The permission APIs return false even if the user has
+    // already granted the permission. Retry a few times before giving up.
+    for attempt in 1..=10 {
+        let screen_ok = unsafe { CGPreflightScreenCaptureAccess() };
+        let ax_ok = unsafe { AXIsProcessTrusted() };
+
+        if screen_ok && ax_ok {
+            return Ok(());
         }
 
-        if !AXIsProcessTrusted() {
+        if attempt < 10 {
+            tracing::info!(
+                "waiting for permissions (screen={screen_ok}, accessibility={ax_ok}), \
+                 attempt {attempt}/10"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
+        }
+
+        if !ax_ok {
             eyre::bail!("komorebi needs to be added as a trusted accessibility process");
         }
 
-        Ok(())
+        if !screen_ok {
+            tracing::warn!(
+                "screen recording permission not granted — window titles may be unavailable. \
+                 Grant it in System Settings → Privacy & Security → Screen Recording"
+            );
+        }
     }
+
+    Ok(())
 }
 
 fn setup(log_level: LogLevel) -> eyre::Result<(WorkerGuard, WorkerGuard)> {
