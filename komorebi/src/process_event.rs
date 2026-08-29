@@ -140,6 +140,43 @@ impl WindowManager {
             return Ok(());
         }
 
+        // A window that moved or resized is no longer necessarily where komorebi left it,
+        // so the remembered position stops being trustworthy -- unless the move was
+        // komorebi's own, which is the case that used to erase the cache on every single
+        // placement and make it useless.
+        //
+        // What tells the two apart is where the report came from, and komorebi's own
+        // count of what it was about to cause:
+        //
+        // * A drag reports through the mouse, and its start arrives while the button is
+        //   still down. Both say the user is moving the window: forget, without question.
+        // * Everything else is a report from the accessibility system that the geometry
+        //   settled. If komorebi is expecting one of those, this is it. If it is not,
+        //   something else moved the window -- the application itself, most likely -- and
+        //   the remembered position is stale.
+        //
+        // Being wrong in the cautious direction costs one round trip on the next
+        // placement. Being wrong the other way leaves a window somewhere it should not
+        // be, so anything not positively identified as komorebi's own is treated as news.
+        if let Some(id) = event.window_id() {
+            match event {
+                WindowManagerEvent::MoveStart(_, _, _)
+                | WindowManagerEvent::ResizeStart(_, _, _)
+                | WindowManagerEvent::Destroy(_, _) => crate::window::forget_position(id),
+
+                WindowManagerEvent::MoveEnd(notification, _, _)
+                | WindowManagerEvent::ResizeEnd(notification, _, _) => {
+                    let user_moved_it = matches!(notification, SystemNotification::Manual(_));
+
+                    if user_moved_it || !crate::window::absorb_self_move_echo(id) {
+                        crate::window::forget_position(id);
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
         let mut rule_debug = RuleDebug::default();
 
         // DIAGNOSTIC: log arrival before anything can discard it.
@@ -456,7 +493,12 @@ impl WindowManager {
                             }
                         }
 
-                        if !is_on_current_workspace && let Some((m_idx, w_idx)) = is_known {
+                        // Not if komorebi caused this focus change itself: that is its own
+                        // echo, and following it means arguing with the user mid-navigation.
+                        if !is_on_current_workspace
+                            && let Some((m_idx, w_idx)) = is_known
+                            && !workspace_reconciliator::focus_was_ours(window_id)
+                        {
                             workspace_reconciliator::send_notification(m_idx, w_idx, event);
                             needs_reconciliation = true;
                         }

@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use crate::AccessibilityObserver;
 use crate::AccessibilityUiElement;
 use crate::FLOATING_APPLICATIONS;
@@ -35,6 +36,7 @@ use crate::animation::ANIMATION_DURATION_PER_ANIMATION;
 use crate::animation::ANIMATION_ENABLED_GLOBAL;
 use crate::animation::ANIMATION_ENABLED_PER_ANIMATION;
 
+use crate::accessibility::private::EnhancedUiHeldOff;
 use crate::accessibility::private::with_enhanced_ui_disabled;
 use crate::animation::ANIMATION_STYLE_GLOBAL;
 use crate::animation::ANIMATION_STYLE_PER_ANIMATION;
@@ -114,6 +116,78 @@ const NOTIFICATIONS: &[&str] = &[
     kAXWindowResizedNotification,
     kAXTitleChangedNotification,
 ];
+
+lazy_static::lazy_static! {
+    /// Where komorebi last confirmed each window to be.
+    ///
+    /// Checking whether a window is already in place used to ask the application every
+    /// time -- a synchronous round trip per window, per layout pass, for something
+    /// komorebi itself decided. It put the window there and watched it land; there is no
+    /// need to ask again.
+    ///
+    /// Invalidated the moment a window moves for any other reason (see forget_position),
+    /// so a window the user drags is never assumed to be where it was left.
+    static ref CONFIRMED_POSITIONS: parking_lot::Mutex<HashMap<u32, Rect>> =
+        parking_lot::Mutex::new(HashMap::new());
+}
+
+/// Move and resize events komorebi's own placements are about to cause.
+///
+/// Moving a window makes macOS report that the window moved, and that report arrives
+/// indistinguishable from the window having moved on its own. The position cache was
+/// therefore erased by the very placement that had just filled it, which is why it never
+/// once produced a hit: every layout pass went back to asking each application where its
+/// window was.
+///
+/// So komorebi says in advance how many reports its own move is about to generate, and
+/// each of those is absorbed rather than treated as news. The count is *set* on every
+/// placement, never added to, so a report that never arrives -- a dropped event, an
+/// application that does not send one -- cannot accumulate and silently swallow a real
+/// move later on.
+static SELF_MOVE_ECHOES: LazyLock<parking_lot::Mutex<HashMap<u32, u8>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+fn expect_self_move_echoes(window_id: u32, count: u8) {
+    SELF_MOVE_ECHOES.lock().insert(window_id, count);
+}
+
+/// Whether this report is one of komorebi's own, and should not be believed as news.
+pub fn absorb_self_move_echo(window_id: u32) -> bool {
+    let mut echoes = SELF_MOVE_ECHOES.lock();
+
+    match echoes.get_mut(&window_id) {
+        Some(remaining) if *remaining > 0 => {
+            *remaining -= 1;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Forget where a window was: it has moved for reasons of its own.
+pub fn forget_position(window_id: u32) {
+    CONFIRMED_POSITIONS.lock().remove(&window_id);
+    SELF_MOVE_ECHOES.lock().remove(&window_id);
+}
+
+/// TIMING: reports how long hiding one window took, however it returns.
+struct TimedHide {
+    started: std::time::Instant,
+    window_id: u32,
+}
+
+impl Drop for TimedHide {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed();
+        if elapsed.as_millis() >= 2 {
+            tracing::warn!(
+                "TIMING hide window={} took={}ms",
+                self.window_id,
+                elapsed.as_millis()
+            );
+        }
+    }
+}
 
 /// Render dispatcher for window movement animations
 pub struct MovementRenderDispatcher {
@@ -521,9 +595,11 @@ impl Window {
         &mut self,
         hiding_position: WindowHidingPosition,
     ) -> Result<(), AccessibilityError> {
-        // DIAGNOSTIC: hiding moves the window off-screen, so it echoes back as
-        // AXWindowMoved exactly like set_position does. See the SELFMOVE note there.
-        tracing::info!("SELFMOVE hide window={}", self.id);
+        let started = std::time::Instant::now();
+        let _timing = TimedHide {
+            started,
+            window_id: self.id,
+        };
 
         let rect = MacosApi::window_rect(&self.element)?;
 
@@ -554,10 +630,29 @@ impl Window {
 
             // EUI disabled so hiding is instant and the window doesn't animate
             // as it moves off-screen (same reason as in set_position_direct).
-            with_enhanced_ui_disabled(&self.element, || {
-                self.set_point(hidden_rect.origin, true)?;
-                self.set_size(hidden_rect.size, true)
-            })?;
+            // Hiding parks the window off-screen at the size it already has, so the
+            // resize half of this is a request to stay exactly as it is -- and a resize
+            // is not a cheap no-op: the application relayouts its whole interface before
+            // answering. WhatsApp charges up to 240ms for one. Compare first and only
+            // ask for what actually differs.
+            let resizing = hidden_rect.size.width != rect.size.width
+                || hidden_rect.size.height != rect.size.height;
+
+            expect_self_move_echoes(self.id, if resizing { 2 } else { 1 });
+
+            let _enhanced_ui = self.hold_enhanced_ui_off();
+
+            self.set_point(hidden_rect.origin, true)?;
+
+            if resizing {
+                self.set_size(hidden_rect.size, true)?;
+            }
+
+            // Parked off-screen is still a place komorebi knows the window to be, and
+            // knowing it is what lets the move back on screen happen without asking.
+            CONFIRMED_POSITIONS
+                .lock()
+                .insert(self.id, Rect::from(hidden_rect));
         }
 
         Ok(())
@@ -577,12 +672,10 @@ impl Window {
 
     #[tracing::instrument(skip_all)]
     pub fn restore(&mut self) -> Result<(), AccessibilityError> {
+        let started = std::time::Instant::now();
         let mut should_remove_restore_position = false;
         let mut window_restore_positions = WINDOW_RESTORE_POSITIONS.lock();
         if let Some(cg_rect) = window_restore_positions.get(&self.id) {
-            // DIAGNOSTIC: restoring moves the window back on-screen and echoes
-            // back as AXWindowMoved. See the SELFMOVE note on set_position.
-            tracing::info!("SELFMOVE restore window={}", self.id);
 
             tracing::debug!(
                 "restoring {:?} to {cg_rect:?}",
@@ -590,8 +683,41 @@ impl Window {
                     .unwrap_or_else(|| String::from("<NO TITLE FOUND>"))
             );
 
-            self.set_point(cg_rect.origin, true)?;
-            self.set_size(cg_rect.size, true)?;
+            // Hiding never changed the size, so the size it has now is almost always the
+            // size being restored. Asking for it anyway makes the application relayout
+            // for nothing. One read says whether either half is needed at all.
+            let current = MacosApi::window_rect(&self.element).ok();
+
+            let point_differs = current.is_none_or(|current| {
+                current.origin.x != cg_rect.origin.x || current.origin.y != cg_rect.origin.y
+            });
+
+            let size_differs = current.is_none_or(|current| {
+                current.size.width != cg_rect.size.width
+                    || current.size.height != cg_rect.size.height
+            });
+
+            if point_differs {
+                self.set_point(cg_rect.origin, true)?;
+            }
+
+            if size_differs {
+                self.set_size(cg_rect.size, true)?;
+            }
+
+            // TIMING: the other half of a workspace change, and until now unmeasured.
+            let elapsed = started.elapsed();
+            if elapsed.as_millis() >= 2 {
+                tracing::warn!(
+                    "TIMING restore window={} app={:?} took={}ms point={} size={}",
+                    self.id,
+                    self.application.name().unwrap_or_default(),
+                    elapsed.as_millis(),
+                    point_differs,
+                    size_differs
+                );
+            }
+
             should_remove_restore_position = true;
         }
 
@@ -685,6 +811,36 @@ impl Window {
     }
 
     pub fn set_position(&self, rect: &Rect) -> Result<(), AccessibilityError> {
+        // Ask for a size the application will actually accept.
+        //
+        // An application that refuses a width does not refuse it cheaply: WhatsApp takes
+        // up to 220ms to decline, measured, and it declines every single time because the
+        // request never changes. Worse, refusing means the window never ends up where it
+        // was put, so the "already in place" check below never matches it and every
+        // layout pass pays that cost again.
+        //
+        // Its minimum is already known -- learned once and remembered on disk -- so
+        // asking for that instead makes the request one it can satisfy. The window ends
+        // up exactly where it would have anyway; the difference is that komorebi stops
+        // arguing about it, and from the next pass on skips it entirely.
+        let mut effective = *rect;
+
+        if let Some(application) = self.application.name() {
+            if let Some(minimum) = crate::min_size::get(&application)
+                && minimum > effective.right
+            {
+                effective.right = minimum;
+            }
+
+            if let Some(minimum) = crate::min_size::get_height(&application)
+                && minimum > effective.bottom
+            {
+                effective.bottom = minimum;
+            }
+        }
+
+        let rect = &effective;
+
         // Moving a window makes macOS emit AXWindowMoved and AXWindowResized, which
         // come straight back to us as events, and handling those can ask for another
         // layout pass. Callers position every window of a workspace unconditionally,
@@ -692,37 +848,48 @@ impl Window {
         // there again -- measured at 938 identical requests to the same two windows
         // in 164 seconds, each one manufacturing two events for the queue to carry.
         //
-        // So: if it is already in place, do nothing. Measurement says 86% of moves
-        // land exactly, with no rounding, so an exact comparison is enough and there
-        // is no need for a tolerance. A window that refuses the geometry (see the
-        // mismatch warning below) never matches and keeps being retried -- that case
-        // is what the per-app minimum width handling is for, not this guard.
-        if let Ok(current) = MacosApi::window_rect(&self.element) {
-            let current = Rect::from(current);
-            if current.left == rect.left
-                && current.top == rect.top
-                && current.right == rect.right
-                && current.bottom == rect.bottom
-            {
-                tracing::debug!("SELFMOVE skip window={} (already in place)", self.id);
-                return Ok(());
+        // If it is already in place, do nothing. A window that refuses the geometry (see
+        // the mismatch warning below) never matches and keeps being retried -- that case
+        // is what the per-application minimum size handling is for, not this guard.
+        //
+        // The second question is whether the window is already the right size and only in
+        // the wrong place. That is
+        // not a rare case, it is the common one: hiding a window parks it off-screen
+        // without touching its size, so everything coming back from a hidden workspace
+        // needs a move and nothing else. Asking for the size anyway makes the application
+        // relayout its whole interface for a value it already has -- measured at over
+        // 100ms per pass for WhatsApp, and it happens on every workspace change.
+        let mut size_already_correct = false;
+
+        // TIMING: the cost of asking the application where its window is, before moving
+        // it. This is the read a working position cache would remove -- every placement
+        // pays it, hit or miss -- and until now it was the one call on this path that was
+        // never measured, because the stopwatch below starts after it.
+        let asking_started = std::time::Instant::now();
+
+        // Where komorebi last put this window, if it still knows. Only when it does not
+        // is the application asked, which after the first placement is almost never.
+        let known = CONFIRMED_POSITIONS.lock().get(&self.id).copied();
+
+        let current_position = match known {
+            Some(known) => Some(known),
+            None => MacosApi::window_rect(&self.element).ok().map(Rect::from),
+        };
+
+        let stage_ask = asking_started.elapsed();
+
+        if let Some(current) = current_position {
+
+            if current.right == rect.right && current.bottom == rect.bottom {
+                size_already_correct = true;
+
+                if current.left == rect.left && current.top == rect.top {
+                    tracing::debug!("SELFMOVE skip window={} (already in place)", self.id);
+                    return Ok(());
+                }
             }
         }
 
-        // DIAGNOSTIC: every move we make comes back at us as an AXWindowMoved /
-        // AXWindowResized notification, indistinguishable in the log from a window
-        // the user dragged. Tagging our own moves with the window id is what lets
-        // an offline pass match each incoming event to the move that caused it,
-        // and so measure how much of the event traffic is komorebi's own echo.
-        // Grep marker: SELFMOVE.
-        tracing::info!(
-            "SELFMOVE set_position window={} rect={},{} {}x{}",
-            self.id,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom
-        );
 
         // Check if animation is enabled (per-animation or global)
         let animation_enabled = {
@@ -733,11 +900,25 @@ impl Window {
                 .unwrap_or_else(|| ANIMATION_ENABLED_GLOBAL.load(Ordering::SeqCst))
         };
 
+        // Say in advance what this move is about to make macOS report back, so those
+        // reports are recognised as komorebi's own rather than as the window having moved
+        // by itself. A position write reports one move; a size write reports a resize too.
+        expect_self_move_echoes(self.id, if size_already_correct { 1 } else { 2 });
+
+        let started = std::time::Instant::now();
+
         let result = if animation_enabled {
             self.set_position_animated(rect)
         } else {
-            self.set_position_direct(rect)
+            self.set_position_direct(rect, size_already_correct)
         };
+
+        // TIMING: the write on its own, before the read-back below is added to it. One
+        // application dominates every workspace it is on -- WhatsApp costs 102ms against
+        // 5ms for Code -- and the two halves have different answers: a slow write is the
+        // application taking its time to move, a slow read is komorebi asking it a
+        // question it did not need to ask.
+        let stage_write = started.elapsed();
 
         // DIAGNOSTIC: an app is free to refuse the geometry we ask for -- most
         // commonly because the rect is below its minimum window size, which is
@@ -745,11 +926,36 @@ impl Window {
         // currently notices: set_position reports success as long as the AX call
         // itself succeeded, never that the window ignored it. Read the geometry
         // back and report the difference. Grep marker: SELFMOVE mismatch.
+        let application = self.application.name();
+
+        // Whether the read-back below ran, and what it found. `None` means it did not run.
+        let mut landed_where_asked: Option<bool> = None;
+
+        // Only ask where it landed while the answer is still unknown. See
+        // [`crate::min_size::worth_verifying`].
+        let worth_verifying = application
+            .as_deref()
+            .is_none_or(|application| {
+                crate::min_size::worth_verifying(application, rect.right, rect.bottom)
+            });
+
         if result.is_ok()
+            && worth_verifying
             && let Ok(actual) = MacosApi::window_rect(&self.element)
         {
             let actual = Rect::from(actual);
-            if actual.right != rect.right || actual.bottom != rect.bottom {
+
+            // Remember where it actually landed, so the next pass needs no round trip.
+            // This is the accurate answer -- read from the window itself -- and it wins
+            // over the assumption made below.
+            CONFIRMED_POSITIONS.lock().insert(self.id, actual);
+            landed_where_asked = Some(actual == *rect);
+
+            if actual.right == rect.right && actual.bottom == rect.bottom {
+                if let Some(application) = &application {
+                    crate::min_size::note_accepted(application, actual.right, actual.bottom);
+                }
+            } else {
                 tracing::warn!(
                     "SELFMOVE mismatch window={} asked={}x{} got={}x{} (delta {}x{})",
                     self.id,
@@ -761,37 +967,103 @@ impl Window {
                     actual.bottom - rect.bottom
                 );
 
-                // Refusing to get narrower is the app telling us its minimum width.
-                // Remember it so the layout can route around it next time instead of
-                // rediscovering it by overlapping windows again.
-                if actual.right > rect.right
-                    && let Some(name) = self.application.name()
-                {
-                    crate::min_width::record(&name, actual.right);
+                // Refusing to get smaller is the app telling us its minimum. Remember
+                // it so the layout can route around it next time instead of
+                // rediscovering it by overlapping windows again. Either dimension can
+                // be the one refused, and measurement says height is the more common
+                // of the two: a dense grid runs out of rows before it runs out of
+                // columns. Zero means "nothing to report about this dimension".
+                if let Some(name) = &application {
+                    crate::min_size::forget_accepted(name);
+
+                    let refused_width = if actual.right > rect.right {
+                        actual.right
+                    } else {
+                        0
+                    };
+
+                    let refused_height = if actual.bottom > rect.bottom {
+                        actual.bottom
+                    } else {
+                        0
+                    };
+
+                    if refused_width > 0 || refused_height > 0 {
+                        crate::min_size::record(name, refused_width, refused_height);
+                    }
                 }
             }
+        }
+
+        // Remember where it was put.
+        //
+        // Only when the read-back above did not run, and so has not already recorded the
+        // real answer. It skips itself once an application has been seen to accept a size
+        // at least this small, which is the same as saying there is nothing left for it
+        // to refuse -- so what was asked for is what it got.
+        if result.is_ok() && landed_where_asked.is_none() {
+            CONFIRMED_POSITIONS.lock().insert(self.id, *rect);
+        }
+
+        // TIMING: one window placement, the unit of work everything else multiplies.
+        //
+        // Split, because the two halves have different answers. The write is the
+        // application taking its time to move and there is little to be done about it.
+        // The read is komorebi asking where the window ended up -- a question it asks of
+        // the same busy process it has just finished waiting for, and one it only needs
+        // to ask while it is still learning what that application will accept.
+        let elapsed = started.elapsed();
+        if elapsed.as_millis() >= 2 {
+            tracing::warn!(
+                "TIMING set_position window={} app={:?} took={}ms ask={}ms write={}ms readback={}ms resized={}",
+                self.id,
+                application.unwrap_or_default(),
+                elapsed.as_millis(),
+                stage_ask.as_millis(),
+                stage_write.as_millis(),
+                elapsed.saturating_sub(stage_write).as_millis(),
+                !size_already_correct
+            );
         }
 
         result
     }
 
-    fn set_position_direct(&self, rect: &Rect) -> Result<(), AccessibilityError> {
+    fn set_position_direct(
+        &self,
+        rect: &Rect,
+        size_already_correct: bool,
+    ) -> Result<(), AccessibilityError> {
         // Disable AXEnhancedUserInterface during the move: when it's on (macOS
         // enables it when an accessibility client connects), the app animates
         // the position/size change with its own implicit animation (~200ms),
         // independent and outside our control. That causes the staggered
         // rendering when switching spaces. With EUI off the move is instant
         // and synchronous.
-        with_enhanced_ui_disabled(&self.element, || {
-            self.set_point(
-                CGPoint::new(rect.left as CGFloat, rect.top as CGFloat),
-                true,
-            )?;
-            self.set_size(
-                CGSize::new(rect.right as CGFloat, rect.bottom as CGFloat),
-                true,
-            )
-        })
+        let _enhanced_ui = self.hold_enhanced_ui_off();
+
+        self.set_point(
+            CGPoint::new(rect.left as CGFloat, rect.top as CGFloat),
+            true,
+        )?;
+
+        if size_already_correct {
+            return Ok(());
+        }
+
+        self.set_size(
+            CGSize::new(rect.right as CGFloat, rect.bottom as CGFloat),
+            true,
+        )
+    }
+
+    /// Hold this window's application out of its own move animations for as long as the
+    /// returned value lives. See [`crate::accessibility::private::hold_enhanced_ui_off`].
+    pub fn hold_enhanced_ui_off(&self) -> EnhancedUiHeldOff<'_> {
+        crate::accessibility::private::hold_enhanced_ui_off(
+            self.application.process_id,
+            self.application.element(),
+        )
     }
 
     fn set_position_animated(&self, target_rect: &Rect) -> Result<(), AccessibilityError> {
@@ -835,24 +1107,19 @@ impl Window {
         let duration = Duration::from_millis(duration);
         if let Err(e) = AnimationEngine::animate(dispatcher, duration) {
             tracing::warn!("Animation failed for window {}: {}", self.id, e);
-            // Fall back to direct positioning
-            return self.set_position_direct(target_rect);
+            // Fall back to direct positioning. The size is set unconditionally here:
+            // an animation that failed part-way leaves the window at an unknown size.
+            return self.set_position_direct(target_rect, false);
         }
 
         Ok(())
     }
 
     pub fn focus(&self, mouse_follows_focus: bool) -> Result<(), LibraryError> {
-        // DIAGNOSTIC: komorebi activating an application is indistinguishable in the log
-        // from the user clicking on it, which makes "the window I just opened lost focus"
-        // impossible to attribute. The tracing span attached to this line names the code
-        // path that asked for it. Grep marker: SELFFOCUS.
-        tracing::info!(
-            "SELFFOCUS window={} app={:?} pid={}",
-            self.id,
-            self.application.name().unwrap_or_default(),
-            self.application.process_id
-        );
+        // Remember that this focus change is ours, so the focus event it produces can be
+        // recognised as an echo rather than as the user going somewhere.
+        crate::workspace_reconciliator::note_focus_we_caused(self.id);
+
 
 
         match self.running_application() {
@@ -1038,6 +1305,32 @@ impl Window {
     }
 
     #[tracing::instrument(skip_all)]
+    /// Whether the user has explicitly asked for this window to be tiled.
+    fn matches_manage_rules(&self) -> bool {
+        let (Some(title), Some(exe), Some(role), Some(subrole), Some(path)) = (
+            self.title(),
+            self.exe(),
+            self.role(),
+            self.subrole(),
+            self.path(),
+        ) else {
+            return false;
+        };
+
+        let manage_identifiers = MANAGE_IDENTIFIERS.lock();
+        let regex_identifiers = REGEX_IDENTIFIERS.lock();
+
+        should_act(
+            &title,
+            &exe,
+            &[&role, &subrole],
+            &path.to_string_lossy(),
+            &manage_identifiers,
+            &regex_identifiers,
+        )
+        .is_some()
+    }
+
     pub fn should_manage(
         &self,
         event: Option<WindowManagerEvent>,
@@ -1062,6 +1355,24 @@ impl Window {
         // }
         //
         // debug.has_minimum_height = true;
+
+        // System panels are not application windows.
+        //
+        // Nothing checked the subrole, so anything with a title was fair game: the
+        // Notification Center identifies itself as AXSystemDialog, carries the title
+        // "Notification Center", and was being tiled -- taking half a workspace and
+        // leaving the desktop showing through, because there is nothing there to draw.
+        // Raycast is the same shape. These are panels the system puts on top of things,
+        // like Spotlight, and they belong outside the layout.
+        //
+        // manage_rules still wins, for anything that genuinely wants to be tiled.
+        if self
+            .subrole()
+            .is_some_and(|subrole| subrole == "AXSystemDialog")
+            && !self.matches_manage_rules()
+        {
+            return Ok(false);
+        }
 
         // A window that has only just been created has not been given a title yet.
         //
