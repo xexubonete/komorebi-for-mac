@@ -1,5 +1,4 @@
 #![warn(clippy::all)]
-
 use crate::accessibility::error::AccessibilityError;
 use crate::core::ApplicationIdentifier;
 use crate::core::DefaultLayout;
@@ -43,10 +42,8 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI32;
-
 #[macro_use]
 pub mod ring;
-
 pub mod accessibility;
 pub mod animation;
 pub mod app_kit_notification_constants;
@@ -60,7 +57,7 @@ pub mod input_event_listener;
 pub mod ioreg;
 pub mod lockable_sequence;
 pub mod macos_api;
-pub mod min_width;
+pub mod min_size;
 pub mod monitor;
 pub mod monitor_reconciliator;
 pub mod notification_center_listener;
@@ -79,7 +76,6 @@ pub mod window_manager_event;
 pub mod window_manager_event_listener;
 pub mod workspace;
 pub mod workspace_reconciliator;
-
 lazy_static! {
     pub static ref HOME_DIR: PathBuf = {
         std::env::var("KOMOREBI_CONFIG_HOME").map_or_else(
@@ -91,12 +87,10 @@ lazy_static! {
             },
             |home_path| {
                 let home = home_path.replace_env();
-
                 assert!(
                     home.is_dir(),
                     "$KOMOREBI_CONFIG_HOME is set to \"{home_path}\", which is not a valid directory"
                 );
-
                 home
             },
         )
@@ -153,17 +147,14 @@ lazy_static! {
     pub static ref LAYOUT_DEFAULTS: Arc<Mutex<HashMap<DefaultLayout, LayoutDefaultEntry>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
-
 pub static DEFAULT_WORKSPACE_PADDING: AtomicI32 = AtomicI32::new(5);
 pub static DEFAULT_CONTAINER_PADDING: AtomicI32 = AtomicI32::new(5);
 pub static DEFAULT_RESIZE_DELTA: i32 = 50;
 pub static DEFAULT_MOUSE_FOLLOWS_FOCUS: bool = true;
-
 pub const PUBLIC_KEY: [u8; 32] = [
     0x5a, 0x69, 0x4a, 0xe1, 0x3c, 0x4b, 0xc8, 0x4e, 0xc3, 0x79, 0x0f, 0xab, 0x27, 0x6b, 0x7e, 0xdd,
     0x6b, 0x39, 0x6f, 0xa2, 0xc3, 0x9f, 0x3d, 0x48, 0xf2, 0x72, 0x56, 0x41, 0x1b, 0xc8, 0x08, 0xdb,
 ];
-
 #[derive(Default, Debug, Clone, PartialEq, Deserialize)]
 pub struct License {
     #[serde(rename = "hasValidSubscription")]
@@ -173,13 +164,11 @@ pub struct License {
     pub current_end_period: Option<i64>,
     pub signature: String,
 }
-
 #[must_use]
 pub fn current_space_id() -> Option<u64> {
     panic::catch_unwind(|| unsafe { skylight::CGSGetActiveSpace(skylight::CGSMainConnectionID()) })
         .ok()
 }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
@@ -191,21 +180,18 @@ pub enum NotificationEvent {
     // // TODO: See if we're actually gonna use this
     // VirtualDesktop(VirtualDesktopNotification),
 }
-
 // #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 // #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 // pub enum VirtualDesktopNotification {
 //     EnteredAssociatedVirtualDesktop,
 //     LeftAssociatedVirtualDesktop,
 // }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Notification {
     pub event: NotificationEvent,
     pub state: State,
 }
-
 pub fn notify_subscribers(
     notification: Notification,
     state_has_been_modified: bool,
@@ -220,19 +206,16 @@ pub fn notify_subscribers(
             // | NotificationEvent::WindowManager(WindowManagerEvent::TitleUpdate(_, _))
             | NotificationEvent::WindowManager(WindowManagerEvent::Show(_, _)) // | NotificationEvent::WindowManager(WindowManagerEvent::Uncloak(_, _))
     );
-
     let notification = &serde_json::to_string(&notification)?;
     let mut stale_sockets = vec![];
     let mut sockets = SUBSCRIPTION_SOCKETS.lock();
     let options = SUBSCRIPTION_SOCKET_OPTIONS.lock();
-
     for (socket, path) in &mut *sockets {
         let apply_state_filter = (*options)
             .get(socket)
             .copied()
             .unwrap_or_default()
             .filter_state_changes;
-
         if !apply_state_filter || state_has_been_modified || is_override_event {
             match UnixStream::connect(path) {
                 Ok(mut stream) => {
@@ -245,7 +228,6 @@ pub fn notify_subscribers(
             }
         }
     }
-
     for socket in stale_sockets {
         tracing::warn!("removing stale subscription: {socket}");
         sockets.remove(&socket);
@@ -257,52 +239,43 @@ pub fn notify_subscribers(
             )
         }
     }
-
     Ok(())
 }
-
 #[derive(Debug, Clone)]
 pub struct CoreFoundationRunLoop(pub CFRetained<CFRunLoop>);
 unsafe impl Sync for CoreFoundationRunLoop {}
 unsafe impl Send for CoreFoundationRunLoop {}
 impl Deref for CoreFoundationRunLoop {
     type Target = CFRunLoop;
-
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()
     }
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilityUiElement(pub CFRetained<AXUIElement>);
 unsafe impl Sync for AccessibilityUiElement {}
 unsafe impl Send for AccessibilityUiElement {}
 impl Deref for AccessibilityUiElement {
     type Target = AXUIElement;
-
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()
     }
 }
-
 impl Default for AccessibilityUiElement {
     fn default() -> Self {
         Self(unsafe { AXUIElement::new_system_wide() })
     }
 }
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AccessibilityObserver(pub Option<CFRetained<AXObserver>>);
 unsafe impl Sync for AccessibilityObserver {}
 unsafe impl Send for AccessibilityObserver {}
 impl Deref for AccessibilityObserver {
     type Target = AXObserver;
-
     fn deref(&self) -> &Self::Target {
         self.0.as_ref().expect("must have an AXObserver")
     }
 }
-
 pub fn cf_array_as<T>(array: &CFArray) -> impl Iterator<Item = NonNull<T>> + use<'_, T> {
     let count = CFArray::count(array);
     (0..count).flat_map(move |idx| {
@@ -310,12 +283,10 @@ pub fn cf_array_as<T>(array: &CFArray) -> impl Iterator<Item = NonNull<T>> + use
             .map(|ptr| ptr.cast::<T>())
     })
 }
-
 pub fn cf_dictionary_value<T>(dict: &CFDictionary, key: &CFString) -> Option<NonNull<T>> {
     let ptr = unsafe { CFDictionary::value(dict, NonNull::from(key).as_ptr().cast()) };
     NonNull::new(ptr.cast_mut()).map(|ptr| ptr.cast::<T>())
 }
-
 #[derive(thiserror::Error, Debug)]
 pub enum LibraryError {
     #[error(transparent)]
@@ -325,19 +296,15 @@ pub enum LibraryError {
     #[error(transparent)]
     Eyre(#[from] eyre::Error),
 }
-
 pub fn hidden_frame_bottom_left(screen_frame: CGRect, window_size: CGSize) -> CGRect {
     let visible_sliver: f64 = 1.0;
     let origin_x = screen_frame.origin.x - (window_size.width - visible_sliver);
     let origin_y = screen_frame.origin.y + screen_frame.size.height - visible_sliver;
-
     CGRect::new(CGPoint::new(origin_x, origin_y), window_size)
 }
-
 pub fn hidden_frame_bottom_right(screen_frame: CGRect, window_size: CGSize) -> CGRect {
     let visible_sliver: f64 = 1.0;
     let origin_x = screen_frame.origin.x + screen_frame.size.width - visible_sliver;
     let origin_y = screen_frame.origin.y + screen_frame.size.height - visible_sliver;
-
     CGRect::new(CGPoint::new(origin_x, origin_y), window_size)
 }
