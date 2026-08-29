@@ -69,6 +69,15 @@ pub fn listen_for_events(wm: Arc<Mutex<WindowManager>>) {
         tracing::info!("listening");
         loop {
             if let Ok(event) = receiver.recv() {
+                // DIAGNOSTIC: the queue only announces itself once it is already
+                // full and dropping. Logging the backlog above a threshold shows
+                // it filling up, and how long it takes to drain afterwards.
+                // Grep marker: BACKLOG.
+                let backlog = receiver.len();
+                if backlog > 5 {
+                    tracing::info!("BACKLOG {} events queued behind {}", backlog, event);
+                }
+
                 let mut guard = wm.lock();
                 match guard.process_event(event) {
                     Ok(()) => {}
@@ -133,6 +142,20 @@ impl WindowManager {
 
         let mut rule_debug = RuleDebug::default();
 
+        // DIAGNOSTIC: log arrival before anything can discard it.
+        //
+        // The "processing event" line below sits after the should_manage filter, so an
+        // event rejected there leaves no trace at all -- the log simply has a gap, which
+        // reads as "the event never arrived" rather than "the event was thrown away".
+        // That cost real time chasing why new windows were not being noticed.
+        // Grep marker: ARRIVED.
+        tracing::debug!(
+            "ARRIVED {} for process {} with notification {}",
+            event,
+            event.process_id(),
+            event.notification()
+        );
+
         let mut should_manage = true;
         {
             let application = self.application(event.process_id())?;
@@ -148,8 +171,10 @@ impl WindowManager {
                 }
 
                 if !should_manage {
-                    tracing::debug!(
-                        "ignoring event as window should not be managed: {print_window}"
+                    // At info: this is where events go to die, and a silent rejection is
+                    // indistinguishable from an event that never came.
+                    tracing::info!(
+                        "REJECTED {event} for {print_window}: window should not be managed"
                     );
                 }
             }
@@ -453,24 +478,66 @@ impl WindowManager {
             // TODO: update this to work with floating applications / rules
             WindowManagerEvent::Show(_, process_id)
             | WindowManagerEvent::Manage(_, process_id, _) => {
+                // A window is coming up and macOS is about to focus it. Note the moment so
+                // the parts of komorebi that move focus around leave it alone until it has
+                // settled -- whether or not this is a window komorebi manages.
+                border_manager::note_window_appeared();
+
                 let focused_monitor_idx = self.focused_monitor_idx();
                 let focused_workspace_idx =
                     self.focused_workspace_idx_for_monitor_idx(focused_monitor_idx)?;
 
                 let mut window_id = None;
                 let mut window_element = None;
-                let mut application_name = String::new();
+                let application_name;
                 let mut tabbed_window = false;
                 let mut create = true;
 
                 {
-                    let application = self.application(process_id)?;
-                    if let Some(element) = application.main_window()
-                        && let Ok(wid) = AccessibilityApi::window_id(&element)
-                    {
-                        window_id = Some(wid);
-                        window_element = Some(element.clone());
+                    // Which of the application's windows is the one that just appeared?
+                    //
+                    // Asking for its main window is not enough. Open a second window of an
+                    // app that already has one -- Cmd+N in a terminal -- and macOS can still
+                    // report the first as the main one. komorebi then looked at a window it
+                    // already manages, decided the event was a duplicate, and the new window
+                    // never entered the layout: it stayed on top of the others, unmanaged,
+                    // with focus on it and no border anywhere.
+                    //
+                    // The window that just appeared is, by definition, the one not yet on any
+                    // workspace. Look for that first, and fall back to the main window when
+                    // every window is already known (a genuine duplicate event).
+                    let candidates = {
+                        let application = self.application(process_id)?;
                         application_name = application.name().unwrap_or_default().clone();
+
+                        let mut candidates = vec![];
+
+                        if let Some(elements) = application.window_elements() {
+                            for element in elements {
+                                if let Ok(wid) = AccessibilityApi::window_id(&element) {
+                                    candidates.push((wid, element.clone()));
+                                }
+                            }
+                        }
+
+                        if let Some(element) = application.main_window()
+                            && let Ok(wid) = AccessibilityApi::window_id(&element)
+                            && !candidates.iter().any(|(known, _)| *known == wid)
+                        {
+                            candidates.push((wid, element.clone()));
+                        }
+
+                        candidates
+                    };
+
+                    let chosen = candidates
+                        .iter()
+                        .find(|(wid, _)| !self.manages_window(*wid))
+                        .or_else(|| candidates.first());
+
+                    if let Some((wid, element)) = chosen {
+                        window_id = Some(*wid);
+                        window_element = Some(element.clone());
                     }
                 }
 
@@ -656,6 +723,11 @@ impl WindowManager {
 
                         self.update_focused_workspace(false, false)?;
                     } else {
+                        // This is the window the user just opened. If the layout that
+                        // follows has to rehouse anything for it to fit, focus belongs
+                        // on this one afterwards -- not on whatever got shuffled.
+                        crate::window_manager::note_window_opened(window.id);
+
                         match behaviour.current_behaviour {
                             WindowContainerBehaviour::Create => {
                                 workspace.new_container_for_window(&window)?;
