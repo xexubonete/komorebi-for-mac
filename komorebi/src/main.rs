@@ -234,6 +234,11 @@ fn main() -> eyre::Result<()> {
         std::fs::create_dir_all(&*DATA_DIR)?;
     }
 
+    // Minimum widths learned in previous runs, so an app that will not fit a narrow
+    // column is routed elsewhere from the first layout rather than after overlapping
+    // its neighbour once.
+    komorebi::min_width::load();
+
     let mtm = MainThreadMarker::new().ok_or_eyre("failed to create main thread marker")?;
     // apparently this establishes the window server connection which is needed super early on tahoe
     let app = NSApplication::sharedApplication(mtm);

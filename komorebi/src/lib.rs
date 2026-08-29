@@ -60,6 +60,7 @@ pub mod input_event_listener;
 pub mod ioreg;
 pub mod lockable_sequence;
 pub mod macos_api;
+pub mod min_width;
 pub mod monitor;
 pub mod monitor_reconciliator;
 pub mod notification_center_listener;
