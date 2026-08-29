@@ -1063,12 +1063,42 @@ impl Window {
         //
         // debug.has_minimum_height = true;
 
+        // A window that has only just been created has not been given a title yet.
+        //
+        // The check below rejects untitled windows, which is right for the invisible
+        // helper elements applications keep around -- but a window announcing its own
+        // creation is a different thing. Ghostty titles a new window once the shell
+        // starts, seconds later; until then this rejected it, so a window opened with
+        // Cmd+N never entered the layout and komorebi only noticed it when a later click
+        // produced a focus event. Applications whose windows are titled from birth (VS
+        // Code among them) passed, which is why it looked app-specific.
+        // ...and only for an ordinary window.
+        //
+        // Without this the exception also let in launcher panels, which report an empty
+        // title too: Raycast started being tiled into the grid instead of floating over
+        // it like Spotlight. Those identify themselves as AXSystemDialog rather than
+        // AXStandardWindow, which separates "a window that has not been named yet" from
+        // "a panel that never will be" without naming applications one by one.
+        let is_newly_created = matches!(
+            event,
+            Some(WindowManagerEvent::Show(
+                SystemNotification::Accessibility(AccessibilityNotification::AXWindowCreated),
+                _,
+            ))
+        ) && self
+            .subrole()
+            .is_some_and(|subrole| subrole == "AXStandardWindow");
+
+        let titleless_is_expected = |window: &Self| {
+            is_newly_created
+                || TITLELESS_APPLICATIONS
+                    .lock()
+                    .contains(&window.exe().unwrap_or_default())
+        };
+
         match self.title() {
             None => {
-                if TITLELESS_APPLICATIONS
-                    .lock()
-                    .contains(&self.exe().unwrap_or_default())
-                {
+                if titleless_is_expected(self) {
                     debug.matches_titleless_applications = self.exe();
                 } else {
                     return Ok(false);
@@ -1077,10 +1107,7 @@ impl Window {
             Some(title) => {
                 // Raycast is dumb and reports an empty string as a title
                 if title.is_empty() {
-                    if TITLELESS_APPLICATIONS
-                        .lock()
-                        .contains(&self.exe().unwrap_or_default())
-                    {
+                    if titleless_is_expected(self) {
                         debug.matches_titleless_applications = self.exe();
                     } else {
                         return Ok(false);

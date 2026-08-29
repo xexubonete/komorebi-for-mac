@@ -59,6 +59,8 @@ unsafe extern "C-unwind" fn application_observer_callback(
 ) {
     unsafe {
         let notification_str = notification.as_ref().to_string();
+
+
         let name =
             AccessibilityApi::copy_attribute_value::<CFString>(element.as_ref(), kAXTitleAttribute)
                 .map(|s| s.to_string());
@@ -70,7 +72,20 @@ unsafe extern "C-unwind" fn application_observer_callback(
             Ok(AccessibilityNotification::AXUIElementDestroyed)
         );
 
-        if is_destroyed || name.as_ref().is_some_and(|n| !n.is_empty()) {
+        // And the mirror case: AXWindowCreated fires before the window has a title.
+        //
+        // The title check below exists to filter out the invisible helper elements apps
+        // create, but a window announcing its own birth has not been given a title yet --
+        // a terminal opened with Cmd+N gets one only once the shell starts. Requiring a
+        // title here silently discarded every new window of an already-running app, so
+        // komorebi never learned they existed: they stayed unmanaged and on top of the
+        // layout, and nothing appeared in the log to say why.
+        let is_created = matches!(
+            AccessibilityNotification::from_str(&notification_str),
+            Ok(AccessibilityNotification::AXWindowCreated)
+        );
+
+        if is_destroyed || is_created || name.as_ref().is_some_and(|n| !n.is_empty()) {
             let mut process_id = 0;
             element.as_ref().pid(NonNull::from_mut(&mut process_id));
 
