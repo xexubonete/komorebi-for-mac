@@ -234,6 +234,13 @@ impl WindowManager {
         match self.applications.entry(process_id) {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(vacant) => {
+                // A process id komorebi has not seen an application for. Either it is
+                // new, or macOS has handed the id of a process that ended to a different
+                // one -- and anything remembered against that number belongs to the
+                // application that is gone. This is the only moment either can happen,
+                // so it is the one place the caches keyed by pid have to be cleared.
+                crate::application::forget_application(process_id);
+
                 let mut application = Application::new(process_id)?;
                 application.observe(&self.run_loop, None);
                 Ok(vacant.insert(application))
@@ -1010,7 +1017,7 @@ impl WindowManager {
 
     /// Move away windows whose application refuses to fit the column it was given.
     ///
-    /// Some apps will not shrink past a width of their own (see [`crate::min_width`]).
+    /// Some apps will not shrink past a width of their own (see [`crate::min_size`]).
     /// Asked for less, they keep their size and spill over the neighbouring window,
     /// and nothing in the layout notices. Rather than leave them overlapping, hand
     /// them a workspace where the columns are wide enough.
@@ -1175,7 +1182,7 @@ impl WindowManager {
                     return Ok(false);
                 };
 
-                return Ok(crate::min_width::get(&application)
+                return Ok(crate::min_size::get(&application)
                     .is_some_and(|minimum| minimum > assigned.right));
             }
         }
@@ -1216,7 +1223,7 @@ impl WindowManager {
 
                 // Its own minimum, or zero for an application that has never refused a
                 // size -- those are the most portable, so they lose the tie.
-                let minimum = crate::min_width::get(&application).unwrap_or(0);
+                let minimum = crate::min_size::get(&application).unwrap_or(0);
 
                 if best.as_ref().is_none_or(|(_, _, m)| minimum > *m) {
                     best = Some((container_idx, application, minimum));
@@ -1276,7 +1283,7 @@ impl WindowManager {
                     continue;
                 };
 
-                let Some(minimum) = crate::min_width::get(&application) else {
+                let Some(minimum) = crate::min_size::get(&application) else {
                     continue;
                 };
 
@@ -1712,6 +1719,10 @@ impl WindowManager {
     #[tracing::instrument(skip(self))]
     pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
         tracing::info!("focusing workspace");
+
+        // The user is navigating, so any reconciliation raised before now is describing a
+        // workspace they have already left. See USER_WORKSPACE_GENERATION.
+        crate::workspace_reconciliator::note_user_changed_workspace();
 
         let mouse_follows_focus = self.mouse_follows_focus;
         let monitor = self

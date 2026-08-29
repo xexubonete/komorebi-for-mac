@@ -14,6 +14,9 @@ use crate::accessibility::notification_constants::kAXMainWindowChangedNotificati
 use crate::accessibility::notification_constants::kAXUIElementDestroyedNotification;
 use crate::accessibility::notification_constants::kAXWindowCreatedNotification;
 use crate::window::Window;
+use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 use crate::window_manager_event::SystemNotification;
 use crate::window_manager_event::WindowManagerEvent;
 use crate::window_manager_event_listener;
@@ -41,6 +44,16 @@ const NOTIFICATIONS: &[&str] = &[
     // when this fires, the app owner name won't be found, but the can be matched via PID
     kAXUIElementDestroyedNotification,
 ];
+static APPLICATION_NAMES: LazyLock<Mutex<HashMap<i32, Option<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Forget everything remembered about a process: it has gone, and the next process to be
+/// handed this id is a different application.
+pub fn forget_application(process_id: i32) {
+    APPLICATION_NAMES.lock().remove(&process_id);
+    crate::accessibility::private::forget_enhanced_ui(process_id);
+}
+
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Application {
@@ -136,9 +149,34 @@ impl Application {
         })
     }
 
+    /// The application's name, asked for once and remembered.
+    ///
+    /// This is a synchronous round trip to the other process, and it was being made
+    /// dozens of times a second: every window placement asks for the name twice before
+    /// it does anything, focusing asks again, and every log line that names an
+    /// application asks once more. An application does not rename itself while it runs,
+    /// so the answer is the same every time.
+    ///
+    /// Keyed by process id, and dropped when the process goes away (see
+    /// [`forget_application`]) so that a reused pid cannot inherit a dead app's name.
     pub fn name(&self) -> Option<String> {
-        AccessibilityApi::copy_attribute_value::<CFString>(&self.element, kAXTitleAttribute)
-            .map(|s| s.to_string())
+        if let Some(known) = APPLICATION_NAMES.lock().get(&self.process_id) {
+            return known.clone();
+        }
+
+        let name = AccessibilityApi::copy_attribute_value::<CFString>(
+            &self.element,
+            kAXTitleAttribute,
+        )
+        .map(|s| s.to_string());
+
+        // A miss is worth remembering too: an application that has no name yet is asked
+        // over and over otherwise. It is forgotten below when anything about it changes.
+        APPLICATION_NAMES
+            .lock()
+            .insert(self.process_id, name.clone());
+
+        name
     }
 
     #[tracing::instrument(skip_all)]
@@ -181,6 +219,13 @@ impl Application {
 
     pub fn is_valid(&self) -> bool {
         AccessibilityApi::copy_attribute_names(&self.element).is_some()
+    }
+
+    /// The application's own accessibility element. Application-level attributes --
+    /// AXEnhancedUserInterface among them -- have to be read and written on this, not on
+    /// one of its windows.
+    pub fn element(&self) -> &crate::AccessibilityUiElement {
+        &self.element
     }
 
     pub fn window_elements(&self) -> Option<CFRetained<CFArray<AXUIElement>>> {
