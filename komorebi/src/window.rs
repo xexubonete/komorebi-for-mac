@@ -244,6 +244,17 @@ unsafe extern "C-unwind" fn window_observer_callback(
     _context: *mut c_void,
 ) {
     unsafe {
+        // DIAGNOSTIC: everything the system sends us at the window level, before any
+        // filtering. Grep marker: RAWWIN.
+        {
+            let mut pid = 0;
+            element.as_ref().pid(NonNull::from_mut(&mut pid));
+            tracing::info!(
+                "RAWWIN {} pid={pid}",
+                notification.as_ref().to_string()
+            );
+        }
+
         let name =
             AccessibilityApi::copy_attribute_value::<CFString>(element.as_ref(), kAXTitleAttribute)
                 .map(|s| s.to_string());
@@ -510,6 +521,10 @@ impl Window {
         &mut self,
         hiding_position: WindowHidingPosition,
     ) -> Result<(), AccessibilityError> {
+        // DIAGNOSTIC: hiding moves the window off-screen, so it echoes back as
+        // AXWindowMoved exactly like set_position does. See the SELFMOVE note there.
+        tracing::info!("SELFMOVE hide window={}", self.id);
+
         let rect = MacosApi::window_rect(&self.element)?;
 
         let mut window_restore_positions = WINDOW_RESTORE_POSITIONS.lock();
@@ -565,6 +580,10 @@ impl Window {
         let mut should_remove_restore_position = false;
         let mut window_restore_positions = WINDOW_RESTORE_POSITIONS.lock();
         if let Some(cg_rect) = window_restore_positions.get(&self.id) {
+            // DIAGNOSTIC: restoring moves the window back on-screen and echoes
+            // back as AXWindowMoved. See the SELFMOVE note on set_position.
+            tracing::info!("SELFMOVE restore window={}", self.id);
+
             tracing::debug!(
                 "restoring {:?} to {cg_rect:?}",
                 self.title()
@@ -666,6 +685,45 @@ impl Window {
     }
 
     pub fn set_position(&self, rect: &Rect) -> Result<(), AccessibilityError> {
+        // Moving a window makes macOS emit AXWindowMoved and AXWindowResized, which
+        // come straight back to us as events, and handling those can ask for another
+        // layout pass. Callers position every window of a workspace unconditionally,
+        // so a window already sitting where it belongs was still being told to move
+        // there again -- measured at 938 identical requests to the same two windows
+        // in 164 seconds, each one manufacturing two events for the queue to carry.
+        //
+        // So: if it is already in place, do nothing. Measurement says 86% of moves
+        // land exactly, with no rounding, so an exact comparison is enough and there
+        // is no need for a tolerance. A window that refuses the geometry (see the
+        // mismatch warning below) never matches and keeps being retried -- that case
+        // is what the per-app minimum width handling is for, not this guard.
+        if let Ok(current) = MacosApi::window_rect(&self.element) {
+            let current = Rect::from(current);
+            if current.left == rect.left
+                && current.top == rect.top
+                && current.right == rect.right
+                && current.bottom == rect.bottom
+            {
+                tracing::debug!("SELFMOVE skip window={} (already in place)", self.id);
+                return Ok(());
+            }
+        }
+
+        // DIAGNOSTIC: every move we make comes back at us as an AXWindowMoved /
+        // AXWindowResized notification, indistinguishable in the log from a window
+        // the user dragged. Tagging our own moves with the window id is what lets
+        // an offline pass match each incoming event to the move that caused it,
+        // and so measure how much of the event traffic is komorebi's own echo.
+        // Grep marker: SELFMOVE.
+        tracing::info!(
+            "SELFMOVE set_position window={} rect={},{} {}x{}",
+            self.id,
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom
+        );
+
         // Check if animation is enabled (per-animation or global)
         let animation_enabled = {
             let per_animation = ANIMATION_ENABLED_PER_ANIMATION.lock();
@@ -675,11 +733,46 @@ impl Window {
                 .unwrap_or_else(|| ANIMATION_ENABLED_GLOBAL.load(Ordering::SeqCst))
         };
 
-        if animation_enabled {
+        let result = if animation_enabled {
             self.set_position_animated(rect)
         } else {
             self.set_position_direct(rect)
+        };
+
+        // DIAGNOSTIC: an app is free to refuse the geometry we ask for -- most
+        // commonly because the rect is below its minimum window size, which is
+        // what makes a window overflow its grid cell on denser layouts. Nothing
+        // currently notices: set_position reports success as long as the AX call
+        // itself succeeded, never that the window ignored it. Read the geometry
+        // back and report the difference. Grep marker: SELFMOVE mismatch.
+        if result.is_ok()
+            && let Ok(actual) = MacosApi::window_rect(&self.element)
+        {
+            let actual = Rect::from(actual);
+            if actual.right != rect.right || actual.bottom != rect.bottom {
+                tracing::warn!(
+                    "SELFMOVE mismatch window={} asked={}x{} got={}x{} (delta {}x{})",
+                    self.id,
+                    rect.right,
+                    rect.bottom,
+                    actual.right,
+                    actual.bottom,
+                    actual.right - rect.right,
+                    actual.bottom - rect.bottom
+                );
+
+                // Refusing to get narrower is the app telling us its minimum width.
+                // Remember it so the layout can route around it next time instead of
+                // rediscovering it by overlapping windows again.
+                if actual.right > rect.right
+                    && let Some(name) = self.application.name()
+                {
+                    crate::min_width::record(&name, actual.right);
+                }
+            }
         }
+
+        result
     }
 
     fn set_position_direct(&self, rect: &Rect) -> Result<(), AccessibilityError> {
@@ -750,6 +843,18 @@ impl Window {
     }
 
     pub fn focus(&self, mouse_follows_focus: bool) -> Result<(), LibraryError> {
+        // DIAGNOSTIC: komorebi activating an application is indistinguishable in the log
+        // from the user clicking on it, which makes "the window I just opened lost focus"
+        // impossible to attribute. The tracing span attached to this line names the code
+        // path that asked for it. Grep marker: SELFFOCUS.
+        tracing::info!(
+            "SELFFOCUS window={} app={:?} pid={}",
+            self.id,
+            self.application.name().unwrap_or_default(),
+            self.application.process_id
+        );
+
+
         match self.running_application() {
             Ok(running_application) => {
                 running_application.activateWithOptions(NSApplicationActivationOptions::empty());
