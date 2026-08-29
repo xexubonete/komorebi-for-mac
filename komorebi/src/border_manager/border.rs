@@ -43,10 +43,16 @@ unsafe extern "C-unwind" fn border_observer_callback(
     unsafe {
         if !context.is_null() {
             let border = &*context.cast::<Border>();
-            if !border.ns_window.window.isVisible() {
-                return;
-            }
 
+            // Keep following the window even while hidden.
+            //
+            // This used to skip hidden borders as an optimisation, back when every window
+            // wore one and hidden meant "about to be destroyed". Now only the focused
+            // window shows a border, so most are hidden most of the time -- and a hidden
+            // border that stops tracking its window comes back, when that window is next
+            // focused, still drawn where the window used to be. Opening a second Ghostty
+            // window is enough to see it: the layout reflows, the hidden borders ignore
+            // it, and the next one shown is the wrong size.
             if let Ok(rect) = MacosApi::window_rect(&border.tracking_element) {
                 let frame = Rect::from(CoreGraphicsApi::display_bounds(CGMainDisplayID()));
                 let mut ns_rect = NSRect::new(
@@ -87,6 +93,8 @@ pub struct Border {
     pub monitor_idx: Option<usize>,
     pub ns_window: NsWindow,
     pub window_kind: WindowKind,
+    /// Which application this border frames, for looking up its corner radius.
+    pub application_name: String,
 }
 
 unsafe impl Send for Border {}
@@ -125,6 +133,10 @@ impl Border {
             tracking_element: element.clone(),
             ns_window: NsWindow::new(ns_rect, tracking_window_id)?,
             window_kind: WindowKind::Unfocused,
+            application_name: crate::application::Application::new(process_id)
+                .ok()
+                .and_then(|app| app.name())
+                .unwrap_or_default(),
         });
 
         DispatchQueue::main().exec_sync(|| {
@@ -186,14 +198,54 @@ impl Border {
         autoreleasepool(|_| {
             let colour = Rgb::from(window_kind_colour(self.window_kind));
 
+            // Only the focused window wears a border.
+            //
+            // Borders sit above every ordinary window and there is no way to slot them
+            // in between (see NsWindow::new), so each one is something that can cover a
+            // window in front of it. Showing only the focused one takes that from one
+            // per window down to exactly one -- and that one belongs to the window
+            // which is, by definition, already in front.
+            let visible = !matches!(
+                self.window_kind,
+                WindowKind::Unfocused | WindowKind::UnfocusedLocked
+            );
+
+            let appeared = self.ns_window.set_visible(visible);
+
+            if !visible {
+                return;
+            }
+
+            let width = BORDER_WIDTH.load(Ordering::Relaxed) as f64;
+
             CATransaction::begin();
             CATransaction::setDisableActions(true);
             self.ns_window.set_border_color(colour);
+            self.ns_window.set_border_width(width);
+
+            // Match the window's own rounding. macOS rounds windows differently per
+            // application -- Apple's own use the system frame, Electron apps and custom
+            // chrome draw their own -- and there is no way to ask a window what its radius
+            // is, so it comes from the per-application rules.
             self.ns_window
-                .set_border_width(BORDER_WIDTH.load(Ordering::Relaxed) as f64);
+                .set_corner_radius(crate::border_manager::border_radius_for(
+                    &self.application_name,
+                ) as f64);
             // TODO: why does this crash?
             // self.ns_window.window.setFrame_display(ns_rect, true);
             CATransaction::commit();
+
+            // Flash only when the border has just come up. Now that only the focused
+            // window carries one, a border appearing *is* its window taking focus --
+            // and update() runs far too often to flash on every call. Outside the
+            // CATransaction above, which disables actions and would swallow it.
+            if appeared {
+                self.ns_window.flash(
+                    width,
+                    crate::border_manager::flash_style(),
+                    colour,
+                );
+            }
         })
     }
 
