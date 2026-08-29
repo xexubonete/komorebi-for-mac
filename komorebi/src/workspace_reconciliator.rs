@@ -86,6 +86,7 @@ pub fn listen_for_notifications(wm: Arc<Mutex<WindowManager>>) {
         }
     });
 }
+#[tracing::instrument(skip_all)]
 pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     tracing::info!("listening");
 
@@ -127,24 +128,67 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
             wm.focus_monitor(notification.monitor_idx)?;
             let mouse_follows_focus = wm.mouse_follows_focus;
 
+            // Did one of our own windows trigger this, or someone else's?
+            //
+            // Reconciliation runs off system events, not off anything the user asked
+            // komorebi to do, so it has to be careful about taking focus. A window we
+            // manage coming to the front (Cmd+Tab) should end up focused. A window we do
+            // not manage coming to the front -- System Settings, opened from a launcher
+            // -- is the user going somewhere else, and stealing focus back drags them out
+            // of the window that just appeared.
+            let triggered_by_managed_window = notification
+                .triggered_by
+                .window_id()
+                .is_some_and(|window_id| {
+                    wm.monitors().iter().any(|monitor| {
+                        monitor
+                            .workspaces()
+                            .iter()
+                            .any(|workspace| workspace.contains_window(window_id))
+                    })
+                });
+
             if let Some(monitor) = wm.focused_monitor_mut() {
                 let previous_idx = monitor.focused_workspace_idx();
                 monitor.last_focused_workspace = Option::from(previous_idx);
                 monitor.focus_workspace(notification.workspace_idx)?;
-                monitor.load_focused_workspace(mouse_follows_focus)?;
+
+                // The workspace still needs laying out either way; the only question is
+                // whether to grab focus at the end of it.
+                if triggered_by_managed_window {
+                    monitor.load_focused_workspace(mouse_follows_focus)?;
+                } else {
+                    monitor.load_focused_workspace_without_taking_focus(mouse_follows_focus)?;
+                }
             }
 
             if let Some(window_id) = notification.triggered_by.window_id() {
-                if let Ok(workspace) = wm.focused_workspace_mut() {
-                    let _ = workspace.focus_container_by_window(window_id);
-                }
+                // Only hand focus over when the window that triggered this is one we
+                // actually manage.
+                //
+                // The point of focusing here is Cmd+Tab: the window being switched to
+                // lives on another space, and it should end up genuinely focused rather
+                // than leaving focus on whichever container was selected before. But a
+                // window komorebi does not manage can trigger this too -- System Settings
+                // opening is one -- and then focus_container_by_window finds nothing,
+                // focused_container is still whatever was selected a moment ago, and we
+                // would pull focus onto that instead. The window the user just opened
+                // loses focus roughly 25ms after appearing.
+                //
+                // So the search result decides: found means the trigger is ours and
+                // focusing it is right; not found means someone else's window is coming
+                // to the front and it is not our business to interfere.
+                let manages_trigger = triggered_by_managed_window
+                    && wm
+                        .focused_workspace_mut()
+                        .is_ok_and(|workspace| workspace.focus_container_by_window(window_id).is_ok());
 
-                if let Ok(workspace) = wm.focused_workspace() {
-                    if let Some(container) = workspace.focused_container() {
-                        if let Some(window) = container.focused_window() {
-                            let _ = window.focus(mouse_follows_focus);
-                        }
-                    }
+                if manages_trigger
+                    && let Ok(workspace) = wm.focused_workspace()
+                    && let Some(container) = workspace.focused_container()
+                    && let Some(window) = container.focused_window()
+                {
+                    let _ = window.focus(mouse_follows_focus);
                 }
             }
 
