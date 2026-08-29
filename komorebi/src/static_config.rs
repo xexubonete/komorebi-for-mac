@@ -516,6 +516,32 @@ pub struct StaticConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(extend("default" = border_manager::BORDER_RADIUS)))]
     pub border_radius: Option<i32>,
+    /// Animation played by the border when its window takes focus.
+    ///
+    /// One of: width (flares wide and settles), pulse (two quick beats), fade (fades
+    /// up), scale (starts oversized and snaps in), glow (ignites near-white and cools),
+    /// none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_flash_style: Option<border_manager::FlashStyle>,
+    /// How far the border flares during the focus flash, as a multiple of its width.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_flash_factor: Option<f32>,
+    /// How long the focus flash lasts, in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_flash_duration_ms: Option<i32>,
+    /// Timing curve of the focus flash: easeOut, easeIn, easeInEaseOut or linear.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_flash_easing: Option<String>,
+    /// Per-application border radius overrides, keyed by application name.
+    ///
+    /// Windows are not all rounded the same: Apple's own applications use the system
+    /// frame, while apps that draw their own -- anything built on Electron, and
+    /// terminals with custom chrome -- pick their own radius. macOS exposes no way to
+    /// ask a window what its radius is, so the exceptions are listed here.
+    ///
+    /// Example: { "Discord": 14, "WhatsApp": 14 }
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border_radius_rules: Option<HashMap<String, i32>>,
     /// Display window borders
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "active_window_border")]
@@ -757,6 +783,11 @@ impl From<&WindowManager> for StaticConfig {
             border_width: Option::from(border_manager::BORDER_WIDTH.load(Ordering::SeqCst)),
             border_offset: Option::from(border_manager::BORDER_OFFSET.load(Ordering::SeqCst)),
             border_radius: Option::from(border_manager::BORDER_RADIUS.load(Ordering::SeqCst)),
+            border_radius_rules: None,
+            border_flash_style: None,
+            border_flash_factor: None,
+            border_flash_duration_ms: None,
+            border_flash_easing: None,
             border: Option::from(border_manager::BORDER_ENABLED.load(Ordering::SeqCst)),
             border_colours,
             // transparency: Option::from(
@@ -904,6 +935,26 @@ impl StaticConfig {
 
         if let Some(border_offset) = self.border_offset {
             border_manager::BORDER_OFFSET.store(border_offset, Ordering::SeqCst);
+        }
+
+        if let Some(factor) = self.border_flash_factor {
+            border_manager::FLASH_FACTOR_X10.store((factor * 10.0) as i32, Ordering::SeqCst);
+        }
+
+        if let Some(ms) = self.border_flash_duration_ms {
+            border_manager::FLASH_DURATION_MS.store(ms, Ordering::SeqCst);
+        }
+
+        if let Some(easing) = &self.border_flash_easing {
+            border_manager::set_flash_easing(easing);
+        }
+
+        if let Some(style) = self.border_flash_style {
+            border_manager::set_flash_style(style);
+        }
+
+        if let Some(rules) = &self.border_radius_rules {
+            border_manager::set_border_radius_rules(rules.clone());
         }
 
         if let Some(border_radius) = self.border_radius {
@@ -1256,6 +1307,13 @@ impl StaticConfig {
 
         let offset = wm.work_area_offset;
         for (i, monitor) in wm.monitors_mut().iter_mut().enumerate() {
+            // Give the monitor the global offset unless it has one of its own, so
+            // that the layout paths which only see the monitor still apply it. See
+            // Monitor::load_focused_workspace.
+            if monitor.work_area_offset.is_none() {
+                monitor.work_area_offset = offset;
+            }
+
             let preferred_config_idx = {
                 let display_index_preferences = DISPLAY_INDEX_PREFERENCES.read();
 
@@ -1419,6 +1477,13 @@ impl StaticConfig {
 
         let offset = wm.work_area_offset;
         for (i, monitor) in wm.monitors_mut().iter_mut().enumerate() {
+            // Give the monitor the global offset unless it has one of its own, so
+            // that the layout paths which only see the monitor still apply it. See
+            // Monitor::load_focused_workspace.
+            if monitor.work_area_offset.is_none() {
+                monitor.work_area_offset = offset;
+            }
+
             let preferred_config_idx = {
                 let display_index_preferences = DISPLAY_INDEX_PREFERENCES.read();
 

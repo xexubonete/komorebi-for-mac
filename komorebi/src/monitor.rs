@@ -222,10 +222,45 @@ impl Monitor {
     }
 
     pub fn load_focused_workspace(&mut self, mouse_follows_focus: bool) -> eyre::Result<()> {
+        self.load_focused_workspace_inner(mouse_follows_focus, true)
+    }
+
+    /// Lay out the focused workspace without taking keyboard focus.
+    ///
+    /// The usual version ends by focusing whatever window the workspace has selected,
+    /// which is right when the user asked for this -- switching workspace, moving a
+    /// container. It is wrong when komorebi is only reacting: opening System Settings
+    /// from a launcher gets it laid out here, and focusing the selected window then
+    /// pulls focus off the window that just appeared, about 25ms after it did.
+    pub fn load_focused_workspace_without_taking_focus(
+        &mut self,
+        mouse_follows_focus: bool,
+    ) -> eyre::Result<()> {
+        self.load_focused_workspace_inner(mouse_follows_focus, false)
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn load_focused_workspace_inner(
+        &mut self,
+        mouse_follows_focus: bool,
+        take_focus: bool,
+    ) -> eyre::Result<()> {
         let focused_idx = self.focused_workspace_idx();
         let monitor_id = self.id;
         let monitor_wp = self.wallpaper.clone();
 
+        // Careful: this passes the monitor's own offset where update_workspace_globals
+        // expects the *global* one, which it uses as the fallback in
+        // `self.work_area_offset.or(offset)`. Both arguments being the same value
+        // means there is no fallback left, so a global work area offset would be
+        // dropped on this path while Monitor::update_focused_workspace -- handed the
+        // global offset by the window manager -- still applied it. The two paths then
+        // laid windows out a couple of points apart and every workspace focus bounced
+        // them between the two, each bounce producing move and resize events.
+        //
+        // The monitor is now seeded with the global offset at config load, so this
+        // reads the right value. Kept as-is rather than plumbing the global offset
+        // through all ten call sites of this function.
         let offset = self.work_area_offset;
         self.update_workspace_globals(focused_idx, offset);
 
@@ -240,16 +275,17 @@ impl Monitor {
 
             if let Some(container) = &mut workspace.monocle_container {
                 container.restore()?;
-                if let Some(window) = container.focused_window() {
+                if take_focus && let Some(window) = container.focused_window() {
                     window.focus(mouse_follows_focus)?;
                 }
             } else if matches!(workspace.layer, WorkspaceLayer::Tiling) {
-                if let Some(container) = workspace.focused_container() {
-                    if let Some(window) = container.focused_window() {
-                        window.focus(mouse_follows_focus)?;
-                    }
+                if take_focus
+                    && let Some(container) = workspace.focused_container()
+                    && let Some(window) = container.focused_window()
+                {
+                    window.focus(mouse_follows_focus)?;
                 }
-            } else if let Some(window) = workspace.focused_floating_window() {
+            } else if take_focus && let Some(window) = workspace.focused_floating_window() {
                 window.focus(mouse_follows_focus)?;
             }
 
