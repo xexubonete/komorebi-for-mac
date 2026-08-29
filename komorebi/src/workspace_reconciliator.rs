@@ -18,7 +18,58 @@ pub struct Notification {
     pub monitor_idx: usize,
     pub workspace_idx: usize,
     pub triggered_by: WindowManagerEvent,
+    /// Which user-navigation generation this was raised in. See [`USER_WORKSPACE_GENERATION`].
+    pub generation: u64,
 }
+
+/// Bumped every time the user changes workspace themselves.
+///
+/// Reconciliation carries a fixed destination and is acted on some time after it was
+/// raised. Changing workspace quickly -- 3 to 2 to 1 -- leaves a request for workspace 2
+/// in flight, and by the time it runs the user is on 1 and gets pulled back. Comparing
+/// generations tells a request that still describes where the user is from one that has
+/// been overtaken.
+pub static USER_WORKSPACE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Windows komorebi focused itself, and has not yet seen the resulting event for.
+///
+/// Focusing a window makes macOS report a focus change, which arrives indistinguishable
+/// from the user clicking on it. Changing workspace focuses the window waiting there, so
+/// moving 3 -> 2 -> 1 quickly leaves komorebi reacting to its own focus changes for
+/// workspaces the user is passing through -- and reconciling back to one of them.
+static FOCUS_WE_CAUSED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Record that komorebi is about to focus this window itself.
+pub fn note_focus_we_caused(window_id: u32) {
+    let mut ours = FOCUS_WE_CAUSED.lock();
+
+    // Bounded: a focus call whose event never arrives must not accumulate.
+    if ours.len() > 16 {
+        ours.remove(0);
+    }
+
+    ours.push(window_id);
+}
+
+/// Whether this focus change is one komorebi caused. Consumes the record.
+pub fn focus_was_ours(window_id: u32) -> bool {
+    let mut ours = FOCUS_WE_CAUSED.lock();
+
+    if let Some(pos) = ours.iter().position(|id| *id == window_id) {
+        ours.remove(pos);
+        return true;
+    }
+
+    false
+}
+
+
+/// Record that the user navigated to a workspace directly.
+pub fn note_user_changed_workspace() {
+    USER_WORKSPACE_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+
 
 static RECONCILIATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LAST_RECONCILIATION: AtomicU64 = AtomicU64::new(0);
@@ -60,6 +111,7 @@ pub fn send_notification(
                 monitor_idx,
                 workspace_idx,
                 triggered_by,
+                generation: USER_WORKSPACE_GENERATION.load(Ordering::SeqCst),
             })
             .is_err()
         {
@@ -70,6 +122,10 @@ pub fn send_notification(
 
 pub fn listen_for_notifications(wm: Arc<Mutex<WindowManager>>) {
     std::thread::spawn(move || {
+        // Reconciliation ends up laying out a workspace, which the user is looking at,
+        // but it is always reacting rather than answering something they just asked for.
+        crate::qos::set_for_current_thread(crate::qos::QosClass::UserInitiated);
+
         loop {
             match handle_notifications(wm.clone()) {
                 Ok(()) => {
@@ -93,6 +149,14 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
     let receiver = event_rx();
 
     for notification in &receiver {
+        // Overtaken by the user: they have navigated since this was raised, so acting on
+        // it would drag them back to a workspace they already left.
+        if notification.generation != USER_WORKSPACE_GENERATION.load(Ordering::SeqCst) {
+            tracing::debug!("user has navigated since this was raised, dropping it");
+            continue;
+        }
+
+
         RECONCILIATION_IN_PROGRESS.store(true, Ordering::Relaxed);
         tracing::info!("running reconciliation for notification {notification:?}");
 
