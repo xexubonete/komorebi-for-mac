@@ -15,9 +15,6 @@ use crate::core::WindowHidingPosition;
 use crate::lockable_sequence::LockableSequence;
 use crate::macos_api::MacosApi;
 use crate::ring::Ring;
-use crate::skylight::CGSMainConnectionID;
-use crate::skylight::SLSDisableUpdate;
-use crate::skylight::SLSReenableUpdate;
 use crate::static_config::Wallpaper;
 use crate::static_config::WorkspaceConfig;
 use crate::window::Window;
@@ -201,6 +198,62 @@ fn resolve_threshold_match(
         .rev()
         .find(|(threshold, _)| container_count >= *threshold)
         .map(|(_, opts)| *opts)
+}
+
+/// Place windows concurrently, one thread per application.
+///
+/// Each placement is a synchronous round trip to the application that owns the window,
+/// and they were done one after another: measured, a workspace change spent 87-97% of its
+/// time here, 130ms on average and up to 348ms, simply adding up conversations that have
+/// nothing to do with each other. Running them at the same time makes the cost the
+/// slowest single window rather than the sum of all of them.
+///
+/// Grouped by process on purpose. Placing a window briefly turns off that application's
+/// own animation (see with_enhanced_ui_disabled), which is a property of the application,
+/// not of the window -- two threads doing that to the same application would race to
+/// restore it. Different applications cannot interfere with each other, so that is where
+/// the concurrency goes.
+fn place_in_parallel(to_place: Vec<(Window, Rect)>) {
+    if to_place.len() < 2 {
+        for (window, rect) in &to_place {
+            if let Err(error) = window.set_position(rect) {
+                tracing::warn!("failed to set window position: {error}")
+            }
+        }
+
+        return;
+    }
+
+    let mut by_process: HashMap<i32, Vec<(Window, Rect)>> = HashMap::new();
+
+    for (window, rect) in to_place {
+        by_process
+            .entry(window.application.process_id)
+            .or_default()
+            .push((window, rect));
+    }
+
+    std::thread::scope(|scope| {
+        for (_, windows) in by_process.iter() {
+            scope.spawn(move || {
+                // Someone pressed a key and is looking at the screen: this is the most
+                // user-interactive work komorebi does, and the class also travels with
+                // the Accessibility calls into the applications being asked to move.
+                crate::qos::set_for_current_thread(crate::qos::QosClass::UserInteractive);
+
+                // Held off once for the whole application rather than once per window.
+                // Each placement inside still asks for it, and each of those costs
+                // nothing while this one is alive.
+                let _enhanced_ui = windows.first().map(|(window, _)| window.hold_enhanced_ui_off());
+
+                for (window, rect) in windows {
+                    if let Err(error) = window.set_position(rect) {
+                        tracing::warn!("failed to set window position: {error}")
+                    }
+                }
+            });
+        }
+    });
 }
 
 impl Workspace {
@@ -868,6 +921,30 @@ impl Workspace {
     pub fn hide(&mut self, omit: Option<u32>) -> eyre::Result<()> {
         let window_hiding_position = self.globals.window_hiding_position;
 
+        // Hiding a workspace moves every one of its windows off-screen, and each move
+        // turned the owning application's animation off and on again around itself. An
+        // application with four windows paid for that four times over. One scope per
+        // application, held open across the whole workspace, makes it once.
+        let mut seen = std::collections::HashSet::new();
+        let one_per_application = self
+            .containers()
+            .iter()
+            .flat_map(|container| container.windows())
+            .chain(self.floating_windows())
+            .chain(
+                self.monocle_container
+                    .iter()
+                    .flat_map(|container| container.windows()),
+            )
+            .filter(|window| seen.insert(window.application.process_id))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let _enhanced_ui = one_per_application
+            .iter()
+            .map(Window::hold_enhanced_ui_off)
+            .collect::<Vec<_>>();
+
         for window in self.floating_windows_mut().iter_mut().rev() {
             let mut should_hide = omit.is_none();
 
@@ -1360,9 +1437,9 @@ impl Workspace {
         }
 
         if self.tile {
-            // Batch screen updates for flicker-free window positioning
-            let connection_id = unsafe { CGSMainConnectionID() };
-            unsafe { SLSDisableUpdate(connection_id) };
+            // Batch screen updates for flicker-free window positioning. A no-op when the
+            // caller is already holding the screen still for a wider operation.
+            let _screen = crate::skylight::hold_screen_still();
 
             let result = (|| -> eyre::Result<()> {
                 if let Some(container) = self.monocle_container.as_mut() {
@@ -1394,6 +1471,9 @@ impl Workspace {
                         effective_layout_options,
                         &self.latest_layout,
                     );
+
+                    // Windows to place, gathered first and placed in parallel afterwards.
+                    let mut to_place: Vec<(Window, Rect)> = Vec::new();
 
                     let is_scrolling =
                         matches!(self.layout, Layout::Default(DefaultLayout::Scrolling));
@@ -1464,22 +1544,24 @@ impl Workspace {
                                     }
                                 } else if percentage_override {
                                     window.center(&work_area, false)?;
-                                } else if let Err(error) = window.set_position(layout) {
-                                    tracing::warn!("failed to set window position: {error}")
+                                } else {
+                                    // Collected rather than placed here: see the parallel
+                                    // placement below.
+                                    to_place.push((window.clone(), *layout));
                                 }
                             }
                         }
                     }
+
+                    place_in_parallel(to_place);
 
                     self.latest_layout = layouts;
                 }
                 Ok(())
             })();
 
-            // Always re-enable updates, even if there was an error
-            unsafe { SLSReenableUpdate(connection_id) };
-
-            // Propagate any error that occurred
+            // Propagate any error that occurred. The screen thaws when `_screen` drops,
+            // whether that happens here or on the way out with an error.
             result?;
         }
 
