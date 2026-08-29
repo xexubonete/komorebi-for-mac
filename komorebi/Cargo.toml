@@ -99,6 +99,11 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
   "objc2-core-foundation",
   "CALayer",
   "CATransaction",
+  # Border focus flash: Core Animation runs the animation itself, so there is no
+  # timer thread stepping values sixty times a second.
+  "CAAnimation",
+  "CAMediaTiming",
+  "CAMediaTimingFunction",
 ] }
 parking_lot = { workspace = true }
 pastey = { workspace = true }
