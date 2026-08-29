@@ -46,3 +46,9 @@ which = "8"
 
 [workspace.metadata.crane]
 name = "komorebi-workspace"
+
+# Line tables only: enough for a readable backtrace without the size or build cost of
+# full debug info. Added while chasing a focus steal with no tracing span; harmless to
+# keep, and it makes any future panic report actually useful.
+[profile.release]
+debug = 1

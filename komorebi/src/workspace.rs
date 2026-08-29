@@ -321,7 +321,7 @@ impl Workspace {
     ///   1. Try threshold match from rules (highest matching threshold wins)
     ///   2. If a rule matches -> use it (full replacement of base)
     ///   3. Else -> use the base `layout_options`
-    fn effective_layout_options(&self) -> Option<LayoutOptions> {
+    pub(crate) fn effective_layout_options(&self) -> Option<LayoutOptions> {
         let container_count = self.containers().len();
 
         let has_workspace_overrides =
