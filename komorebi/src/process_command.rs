@@ -617,9 +617,14 @@ impl WindowManager {
             }
 
             SocketMessage::MoveContainerToWorkspaceNumber(workspace_idx) => {
+                // The window the user is moving is the one they are working with, so if
+                // the layout it lands in has to rehouse something to make room, focus
+                // belongs on this one afterwards -- exactly as when a window is opened.
+                self.note_focused_window_as_user_intent();
                 self.move_container_to_workspace(workspace_idx, true, None)?;
             }
             SocketMessage::SendContainerToWorkspaceNumber(workspace_idx) => {
+                self.note_focused_window_as_user_intent();
                 self.move_container_to_workspace(workspace_idx, false, None)?;
             }
             SocketMessage::ToggleMonocle => self.toggle_monocle()?,
@@ -890,6 +895,7 @@ impl WindowManager {
                 if let Some(monitor) = self.focused_monitor_mut()
                     && let Some(last_focused_workspace) = monitor.last_focused_workspace
                 {
+                    self.note_focused_window_as_user_intent();
                     self.move_container_to_workspace(last_focused_workspace, true, None)?;
                 }
 
@@ -918,6 +924,7 @@ impl WindowManager {
                 if let Some(monitor) = self.focused_monitor_mut()
                     && let Some(last_focused_workspace) = monitor.last_focused_workspace
                 {
+                    self.note_focused_window_as_user_intent();
                     self.move_container_to_workspace(last_focused_workspace, false, None)?;
                 }
                 self.focused_monitor_mut()
@@ -936,6 +943,7 @@ impl WindowManager {
                         .ok_or_eyre("there must be at least one workspace")?,
                 );
 
+                self.note_focused_window_as_user_intent();
                 self.move_container_to_workspace(workspace_idx, true, None)?;
             }
             SocketMessage::MoveContainerToMonitorNumber(monitor_idx) => {
@@ -967,6 +975,7 @@ impl WindowManager {
                         .ok_or_eyre("there must be at least one workspace")?,
                 );
 
+                self.note_focused_window_as_user_intent();
                 self.move_container_to_workspace(workspace_idx, false, None)?;
             }
             SocketMessage::SendContainerToMonitorNumber(monitor_idx) => {

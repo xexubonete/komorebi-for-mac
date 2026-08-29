@@ -60,6 +60,52 @@ use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
+
+/// Guards against re-entering the relocation pass: moving a container re-runs the
+/// layout, which would otherwise call back into it.
+static RELOCATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Ceiling on moves per layout pass, so an app that fits nowhere cannot be passed
+/// around workspaces forever.
+const MAX_RELOCATIONS_PER_PASS: usize = 8;
+
+/// The window komorebi most recently took in, so a relocation can tell the window the
+/// user just acted on from one that merely had to move out of its way.
+static LAST_OPENED_WINDOW: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the user put that window where it is on purpose, as opposed to it having just
+/// opened wherever it opened.
+///
+/// The two want opposite things when the window does not fit. A window that just opened
+/// can be sent to a workspace with room -- it has no place of its own yet. A window the
+/// user deliberately moved here must stay: sending it on lands it back where it came
+/// from, so the move appears to be ignored. Something else gives way instead.
+static LAST_WINDOW_WAS_PLACED: AtomicBool = AtomicBool::new(false);
+
+/// Record the window komorebi has just started managing. See [`LAST_OPENED_WINDOW`].
+pub fn note_window_opened(window_id: u32) {
+    LAST_OPENED_WINDOW.store(window_id, Ordering::SeqCst);
+    LAST_WINDOW_WAS_PLACED.store(false, Ordering::SeqCst);
+}
+
+impl WindowManager {
+    /// Mark the focused window as the one the user is acting on.
+    ///
+    /// Opening a window is not the only way to trigger a relocation: moving one into a
+    /// workspace can push a window already there below its minimum width. Either way the
+    /// user has a window in mind, and focus should end up on it rather than on whatever
+    /// got shuffled aside. Called from the command handlers, so komorebi's own internal
+    /// moves -- including the relocation itself -- never claim to be user intent.
+    pub fn note_focused_window_as_user_intent(&self) {
+        if let Ok(window) = self.focused_window() {
+            LAST_OPENED_WINDOW.store(window.id, Ordering::SeqCst);
+            LAST_WINDOW_WAS_PLACED.store(true, Ordering::SeqCst);
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct WindowManager {
@@ -935,6 +981,11 @@ impl WindowManager {
             .ok_or_eyre("there is no monitor")?
             .update_focused_workspace(offset)?;
 
+        // The layout has just been applied, so latest_layout now says what width
+        // each window actually got: the moment to spot the ones that cannot live
+        // with it.
+        self.relocate_windows_below_minimum_width()?;
+
         if follow_focus && trigger_focus {
             // When a monocle container is active, workspace.update() already positioned it at
             // the work area. Focus that window directly so the cursor follows the monocle
@@ -955,6 +1006,362 @@ impl WindowManager {
         }
 
         Ok(())
+    }
+
+    /// Move away windows whose application refuses to fit the column it was given.
+    ///
+    /// Some apps will not shrink past a width of their own (see [`crate::min_width`]).
+    /// Asked for less, they keep their size and spill over the neighbouring window,
+    /// and nothing in the layout notices. Rather than leave them overlapping, hand
+    /// them a workspace where the columns are wide enough.
+    ///
+    /// Only as many windows are moved as it takes: removing one widens the columns
+    /// for everyone left behind, which often lifts the others back above their own
+    /// minimum, so the layout is recomputed after each move and the loop stops as
+    /// soon as everything fits. A window that has been moved stays where it was put.
+    pub fn relocate_windows_below_minimum_width(&mut self) -> eyre::Result<()> {
+        // Moving a container re-runs the layout, which lands back here. Let the
+        // outermost call do the work and have the nested ones return immediately.
+        if RELOCATION_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let result = self.relocate_below_minimum_width_inner();
+        RELOCATION_IN_PROGRESS.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn relocate_below_minimum_width_inner(&mut self) -> eyre::Result<()> {
+        let just_opened = LAST_OPENED_WINDOW.load(Ordering::SeqCst);
+
+        // Where focus should end up once the dust settles, and whether the view has to
+        // follow it. Focus belongs on the window the user just opened, wherever it ends
+        // up: that is the one they asked for. What differs is that when *that* window is
+        // the one being rehoused, the view has to travel with it, and when some other
+        // window has to move out of its way, the view stays put.
+        let mut follow_to: Option<usize> = None;
+        let mut relocated_any = false;
+
+        // One move per window at most; a cap keeps a misbehaving app from starting
+        // an endless game of pass-the-window between workspaces.
+        for _ in 0..MAX_RELOCATIONS_PER_PASS {
+            let pinned = self.user_placed_window();
+
+            let candidate = match self.window_needing_more_width()? {
+                Some(candidate) => Some(candidate),
+                // Nothing movable is short of width. If the window the user placed here
+                // is the one that does not fit, evict a neighbour to widen the columns
+                // for it, rather than sending it back where it came from.
+                None => match pinned {
+                    Some(id) if self.window_is_below_minimum(id)? => {
+                        self.neighbour_to_evict_for(id)?
+                    }
+                    _ => None,
+                },
+            };
+
+            let Some((container_idx, application, minimum)) = candidate else {
+                break;
+            };
+
+            let Some(target_idx) = self.workspace_with_room_for(minimum)? else {
+                tracing::warn!(
+                    "{application} needs {minimum} points of width and no workspace has room for it; leaving it where it is"
+                );
+                break;
+            };
+
+            let moving_the_window_just_opened = self
+                .focused_workspace()?
+                .containers()
+                .get(container_idx)
+                .is_some_and(|container| container.contains_window(just_opened));
+
+            tracing::info!(
+                "moving {application} to workspace {} (needs {minimum} points of width)",
+                target_idx + 1
+            );
+
+            // move_container_to_workspace acts on whatever is focused, so the window
+            // being moved has to be focused first. Put the focus back afterwards, or
+            // the user would find it jumping to another window every time a layout
+            // pass quietly rehoused something.
+            let workspace = self.focused_workspace_mut()?;
+            let focused_before = workspace.focused_container_idx();
+
+            workspace.focus_container(container_idx);
+            self.move_container_to_workspace(target_idx, false, None)?;
+
+            relocated_any = true;
+
+            if moving_the_window_just_opened {
+                // The window the user opened has gone elsewhere; take them to it.
+                follow_to = Some(target_idx);
+            }
+
+            let workspace = self.focused_workspace_mut()?;
+            let remaining = workspace.containers().len();
+
+            if remaining > 0 {
+                // Everything after the departed container shifted down one place.
+                let restored = if focused_before > container_idx {
+                    focused_before - 1
+                } else {
+                    focused_before
+                };
+
+                workspace.focus_container(restored.min(remaining - 1));
+            }
+        }
+
+        // Nothing moved, so nothing disturbed the focus and there is nothing to put
+        // back. This guard is the whole difference between a focus correction and a
+        // focus trap: this runs on every layout pass, so re-focusing unconditionally
+        // pins the user to the last window they touched and will not let go of it.
+        if !relocated_any {
+            return Ok(());
+        }
+
+        // Land the focus. Doing it once at the end rather than after each move avoids
+        // yanking the view around when several windows have to be rehoused in one pass.
+        match follow_to {
+            Some(target_idx) => {
+                self.focus_workspace(target_idx)?;
+                self.focus_window_by_id(just_opened)?;
+            }
+            None => {
+                // Nothing the user opened has moved, so it is still here -- but the
+                // relocation left focus on whichever container happened to shift into
+                // place. Put it back where the user is looking.
+                self.focus_window_by_id(just_opened)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Whether this window is one komorebi already has on a workspace.
+    pub fn manages_window(&self, window_id: u32) -> bool {
+        self.monitors().iter().any(|monitor| {
+            monitor.workspaces().iter().any(|workspace| {
+                workspace.contains_window(window_id)
+                    || workspace
+                        .floating_windows()
+                        .iter()
+                        .any(|window| window.id == window_id)
+            })
+        })
+    }
+
+    /// Whether a window is currently narrower than its application will accept.
+    fn window_is_below_minimum(&self, window_id: u32) -> eyre::Result<bool> {
+        let workspace = self.focused_workspace()?;
+
+        for (container_idx, container) in workspace.containers().iter().enumerate() {
+            if !container.contains_window(window_id) {
+                continue;
+            }
+
+            let Some(assigned) = workspace.latest_layout.get(container_idx) else {
+                return Ok(false);
+            };
+
+            for window in container.windows().iter() {
+                if window.id != window_id {
+                    continue;
+                }
+
+                let Some(application) = window.application.name() else {
+                    return Ok(false);
+                };
+
+                return Ok(crate::min_width::get(&application)
+                    .is_some_and(|minimum| minimum > assigned.right));
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// The window the user deliberately placed on this workspace, if any.
+    fn user_placed_window(&self) -> Option<u32> {
+        LAST_WINDOW_WAS_PLACED
+            .load(Ordering::SeqCst)
+            .then(|| LAST_OPENED_WINDOW.load(Ordering::SeqCst))
+            .filter(|id| *id != 0)
+    }
+
+    /// A neighbour to move out so the window the user placed here can fit.
+    ///
+    /// Reached when the only window below its minimum is one that must stay put. Nothing
+    /// can widen it in place, but taking any other window off the workspace widens every
+    /// column that remains -- so the fix is to evict a neighbour rather than the window
+    /// the user just moved in.
+    ///
+    /// The greediest neighbour goes first: it is the one most likely to be cramped here
+    /// anyway, and moving it frees the most room.
+    fn neighbour_to_evict_for(&self, pinned: u32) -> eyre::Result<Option<(usize, String, i32)>> {
+        let workspace = self.focused_workspace()?;
+        let mut best: Option<(usize, String, i32)> = None;
+
+        for (container_idx, container) in workspace.containers().iter().enumerate() {
+            if container.contains_window(pinned) {
+                continue;
+            }
+
+            for window in container.windows().iter() {
+                let Some(application) = window.application.name() else {
+                    continue;
+                };
+
+                // Its own minimum, or zero for an application that has never refused a
+                // size -- those are the most portable, so they lose the tie.
+                let minimum = crate::min_width::get(&application).unwrap_or(0);
+
+                if best.as_ref().is_none_or(|(_, _, m)| minimum > *m) {
+                    best = Some((container_idx, application, minimum));
+                }
+            }
+        }
+
+        Ok(best)
+    }
+
+    /// Focus a specific window by id, wherever it is on the focused workspace.
+    ///
+    /// Quietly does nothing if the window is not here: after a relocation pass the id may
+    /// belong to a window that has just been moved away, and that is not an error.
+    fn focus_window_by_id(&mut self, window_id: u32) -> eyre::Result<()> {
+        if window_id == 0 {
+            return Ok(());
+        }
+
+        let mouse_follows_focus = self.mouse_follows_focus;
+        let workspace = self.focused_workspace_mut()?;
+
+        if workspace.focus_container_by_window(window_id).is_err() {
+            return Ok(());
+        }
+
+        if let Some(container) = workspace.focused_container()
+            && let Some(window) = container.focused_window()
+        {
+            window.focus(mouse_follows_focus)?;
+        }
+
+        Ok(())
+    }
+
+    /// The window furthest below its minimum width, as (container, app, minimum).
+    ///
+    /// The greediest one goes first on purpose: it is the hardest to satisfy, and
+    /// moving it frees the most room for the rest.
+    fn window_needing_more_width(&self) -> eyre::Result<Option<(usize, String, i32)>> {
+        let workspace = self.focused_workspace()?;
+        let pinned = self.user_placed_window();
+        let mut worst: Option<(usize, String, i32)> = None;
+
+        for (container_idx, container) in workspace.containers().iter().enumerate() {
+            // Never move the window the user just placed here; see LAST_WINDOW_WAS_PLACED.
+            if pinned.is_some_and(|id| container.contains_window(id)) {
+                continue;
+            }
+
+            let Some(assigned) = workspace.latest_layout.get(container_idx) else {
+                continue;
+            };
+
+            for window in container.windows().iter() {
+                let Some(application) = window.application.name() else {
+                    continue;
+                };
+
+                let Some(minimum) = crate::min_width::get(&application) else {
+                    continue;
+                };
+
+                if minimum <= assigned.right {
+                    continue;
+                }
+
+                if worst.as_ref().is_none_or(|(_, _, m)| minimum > *m) {
+                    worst = Some((container_idx, application, minimum));
+                }
+            }
+        }
+
+        Ok(worst)
+    }
+
+    /// The next workspace, in numerical order, that can actually hold a window of
+    /// this width: an empty one for preference, otherwise a quiet one where the
+    /// columns would still be wide enough once this window joins them.
+    ///
+    /// The width is worked out from the destination's own layout rather than from a
+    /// fixed window count, so this keeps holding when the screen changes -- on a
+    /// 2560-wide display the columns drop below 980 at five windows, on a 4K one not
+    /// until ten.
+    fn workspace_with_room_for(&self, minimum: i32) -> eyre::Result<Option<usize>> {
+        let monitor = self.focused_monitor().ok_or_eyre("there is no monitor")?;
+        let current_idx = monitor.focused_workspace_idx();
+        let workspaces = monitor.workspaces();
+
+        for (idx, workspace) in workspaces.iter().enumerate() {
+            if idx <= current_idx {
+                continue;
+            }
+
+            // Would it actually fit here, once it is in? That is the only question.
+            //
+            // This used to prefer an empty workspace and fall back to a quiet one, but
+            // empty was never what mattered: a workspace holding two windows can have
+            // room to spare, and skipping it to reach an empty one further along just
+            // scatters windows for no reason.
+            if self.column_width_with_one_more(idx, workspace.containers().len() + 1) >= minimum {
+                return Ok(Some(idx));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Narrowest column a workspace would end up with if it held `containers` windows.
+    fn column_width_with_one_more(&self, workspace_idx: usize, containers: usize) -> i32 {
+        let Some(monitor) = self.focused_monitor() else {
+            return 0;
+        };
+
+        let Some(workspace) = monitor.workspaces().get(workspace_idx) else {
+            return 0;
+        };
+
+        let Some(count) = NonZeroUsize::new(containers) else {
+            return 0;
+        };
+
+        let work_area = monitor.work_area_size;
+
+        // Asking the destination's own layout keeps this honest for every layout
+        // kind, instead of assuming a grid. Padding is left out: it only ever makes
+        // columns narrower, so this errs towards moving a window rather than
+        // parking it somewhere it would not have fitted after all.
+        workspace
+            .layout
+            .as_boxed_arrangement()
+            .calculate(
+                &work_area,
+                count,
+                workspace.container_padding,
+                workspace.layout_flip,
+                &[],
+                0,
+                workspace.effective_layout_options(),
+                &[],
+            )
+            .iter()
+            .map(|rect| rect.right)
+            .min()
+            .unwrap_or(0)
     }
 
     #[tracing::instrument(skip(self))]
