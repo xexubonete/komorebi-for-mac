@@ -136,11 +136,23 @@ impl WindowManager {
             tracing::info!("processing command: {message}");
         }
 
+        // TIMING: everything a command pays for, not just the part that does the work.
+        // The workspace change itself was already measured; this says what surrounds it,
+        // because a command does three full state snapshots and a disk write on top of
+        // whatever was asked for. Grep marker: TIMING command.
+        let command_started = std::time::Instant::now();
+
         #[allow(clippy::useless_asref)]
         // We don't have From implemented for &mut WindowManager
         let initial_state = State::from(self.as_ref());
 
+        let stage_snapshot = command_started.elapsed();
+        let t = std::time::Instant::now();
+
         self.handle_unmanaged_window_behaviour()?;
+
+        let stage_unmanaged = t.elapsed();
+        let t = std::time::Instant::now();
 
         match message {
             SocketMessage::Promote => self.promote_container_to_front()?,
@@ -1850,6 +1862,9 @@ impl WindowManager {
             },
         }
 
+        let stage_work = t.elapsed();
+        let t = std::time::Instant::now();
+
         self.update_known_window_ids();
 
         notify_subscribers(
@@ -1861,6 +1876,18 @@ impl WindowManager {
         )?;
 
         border_manager::send_notification(None, None, false);
+
+        let stage_notify = t.elapsed();
+
+        tracing::warn!(
+            "TIMING command total={}ms snapshot={}ms unmanaged={}ms work={}ms notify={}ms ({})",
+            command_started.elapsed().as_millis(),
+            stage_snapshot.as_millis(),
+            stage_unmanaged.as_millis(),
+            stage_work.as_millis(),
+            stage_notify.as_millis(),
+            message
+        );
 
         if matches!(message, SocketMessage::Theme(_)) {
             tracing::trace!("processed command: {message}");
@@ -1876,6 +1903,10 @@ pub fn read_commands_uds(
     wm: &Arc<Mutex<WindowManager>>,
     mut stream: UnixStream,
 ) -> eyre::Result<()> {
+    // The thread that carries out whatever the user just asked for. Set once for the
+    // life of the connection, not per command.
+    crate::qos::set_for_current_thread(crate::qos::QosClass::UserInteractive);
+
     let reader = BufReader::new(stream.try_clone()?);
     // TODO(raggi): while this processes more than one command, if there are
     // replies there is no clearly defined protocol for framing yet - it's
@@ -1884,6 +1915,11 @@ pub fn read_commands_uds(
     for line in reader.lines() {
         let message = SocketMessage::from_str(&line?)?;
 
+        // TIMING: how long a command waits for the window manager to be free. A slow
+        // command blocks the next one here, so this is where a burst of workspace
+        // changes would show up as queueing rather than as slowness.
+        let waiting_since = std::time::Instant::now();
+
         match wm.try_lock_for(Duration::from_secs(1)) {
             None => {
                 tracing::warn!(
@@ -1891,6 +1927,12 @@ pub fn read_commands_uds(
                 );
             }
             Some(mut wm) => {
+                let waited = waiting_since.elapsed();
+
+                if waited.as_millis() >= 2 {
+                    tracing::warn!("TIMING lock-wait took={}ms ({message})", waited.as_millis());
+                }
+
                 if wm.is_paused {
                     return match message {
                         SocketMessage::TogglePause
@@ -1905,7 +1947,16 @@ pub fn read_commands_uds(
                 }
 
                 wm.process_command(message.clone(), &mut stream)?;
+
+                // TIMING: the command is answered before this runs, but the lock is still
+                // held, so the next command waits behind it. Grep marker: TIMING session.
+                let t = std::time::Instant::now();
                 crate::session::save(&wm);
+                let elapsed = t.elapsed();
+
+                if elapsed.as_millis() >= 2 {
+                    tracing::warn!("TIMING session-save took={}ms", elapsed.as_millis());
+                }
             }
         }
     }

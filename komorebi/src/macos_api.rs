@@ -509,10 +509,6 @@ impl MacosApi {
     pub fn activate_finder() {
         use objc2_app_kit::NSApplicationActivationOptions;
 
-        // DIAGNOSTIC: this deliberately takes focus away from whatever the user is on.
-        // Worth knowing every time it happens, and which code path asked. Grep marker:
-        // SELFFOCUS.
-        tracing::info!("SELFFOCUS activating Finder");
 
         DispatchQueue::main().exec_sync(move || {
             let workspace = NSWorkspace::sharedWorkspace();
