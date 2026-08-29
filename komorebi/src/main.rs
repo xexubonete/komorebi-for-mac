@@ -214,6 +214,11 @@ fn main() -> eyre::Result<()> {
     let opts: Opts = Opts::parse();
     let (_guard, _color_guard) = setup(opts.log_level)?;
 
+    // The main thread runs the CoreFoundation run loop: every Accessibility notification
+    // arrives here, and every border window is created and destroyed here. Nothing in
+    // komorebi is closer to what the user sees.
+    komorebi::qos::set_for_current_thread(komorebi::qos::QosClass::UserInteractive);
+
     let mut system = sysinfo::System::new();
     system.refresh_processes(ProcessesToUpdate::All, true);
 
@@ -237,7 +242,7 @@ fn main() -> eyre::Result<()> {
     // Minimum widths learned in previous runs, so an app that will not fit a narrow
     // column is routed elsewhere from the first layout rather than after overlapping
     // its neighbour once.
-    komorebi::min_width::load();
+    komorebi::min_size::load();
 
     let mtm = MainThreadMarker::new().ok_or_eyre("failed to create main thread marker")?;
     // apparently this establishes the window server connection which is needed super early on tahoe
