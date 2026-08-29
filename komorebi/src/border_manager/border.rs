@@ -249,14 +249,16 @@ impl Border {
         })
     }
 
-    pub fn destroy(&self) {
+    /// Close the border window. Must already be on the main thread.
+    ///
+    /// The caller hops once and does both this and observer invalidation in that block;
+    /// hopping again from here would deadlock.
+    pub fn destroy_on_main_thread(&self) {
         let window_ptr = Retained::as_ptr(&self.ns_window.window) as usize;
 
-        DispatchQueue::main().exec_sync(|| {
-            autoreleasepool(|_| unsafe {
-                let window = window_ptr as *const NSWindow;
-                (*window).close();
-            });
+        autoreleasepool(|_| unsafe {
+            let window = window_ptr as *const NSWindow;
+            (*window).close();
         });
     }
 }

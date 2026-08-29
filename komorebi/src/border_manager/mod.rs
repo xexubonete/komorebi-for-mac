@@ -273,23 +273,34 @@ fn remove_border(
 }
 
 fn destroy_border(border: Box<Border>) -> color_eyre::Result<()> {
-    DispatchQueue::main().exec_sync(|| {
-        tracing::info!("invalidating border observer");
+    // One hop to the main thread, no sleep.
+    //
+    // This used to invalidate the observer, sleep 10ms, then close the window in a second
+    // hop. Switching workspace destroys every border on it, so that was 10ms plus two
+    // thread handoffs per window, serially, on the path the user feels most -- with six
+    // windows, most of a frame spent waiting on purpose.
+    //
+    // The sleep was guarding against a callback touching the border while it was being
+    // torn down, but the allocation is deliberately leaked below (into_raw with no
+    // matching from_raw) precisely so that cannot happen. Invalidating and closing in the
+    // same main-thread block keeps that ordering without anyone waiting.
+    let raw_pointer = Box::into_raw(border) as usize;
+
+    DispatchQueue::main().exec_sync(move || unsafe {
+        let border = &*(raw_pointer as *const Border);
         AccessibilityApi::invalidate_observer(&border.observer);
+        border.destroy_on_main_thread();
     });
-
-    std::thread::sleep(std::time::Duration::from_millis(10));
-
-    let raw_pointer = Box::into_raw(border);
-    unsafe {
-        (*raw_pointer).destroy();
-    }
 
     Ok(())
 }
 
 pub fn listen_for_notifications(wm: Arc<Mutex<WindowManager>>, run_loop: CoreFoundationRunLoop) {
     std::thread::spawn(move || {
+        // Borders follow the focused window, so they are on screen for the user to look
+        // at while everything else is moving.
+        crate::qos::set_for_current_thread(crate::qos::QosClass::UserInteractive);
+
         loop {
             match handle_notifications(wm.clone(), run_loop.clone()) {
                 Ok(()) => {
