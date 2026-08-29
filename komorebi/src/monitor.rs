@@ -206,7 +206,23 @@ impl Monitor {
 
     #[tracing::instrument(skip(self))]
     pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
-        tracing::info!("focusing workspace");
+        // Every workspace change goes through here, whoever asked for it. Kept at debug:
+        // cheap when off, and the first thing worth looking at when navigation misbehaves.
+        tracing::debug!("workspace change {} -> {}", self.focused_workspace_idx(), idx);
+
+        // Take the borders down before anything else moves.
+        //
+        // Borders are their own floating windows, updated by a separate thread reacting
+        // to events. The workspace change itself is fast, so the window underneath a
+        // border is gone well before that thread hears about it, and the border of the
+        // workspace being left hangs in mid-air over the new one until it catches up.
+        //
+        // Destroying them here is synchronous and on the same path as the change, so
+        // the border cannot outlive its window. The command that asked for the change
+        // sends a border refresh once it finishes, which draws the new one.
+        if idx != self.focused_workspace_idx() {
+            crate::border_manager::destroy_all_borders()?;
+        }
 
         {
             let workspaces = self.workspaces_mut();
@@ -245,6 +261,27 @@ impl Monitor {
         mouse_follows_focus: bool,
         take_focus: bool,
     ) -> eyre::Result<()> {
+        // TIMING: this is the path between pressing a workspace key and seeing the
+        // result. Each stage is timed separately because they cost very different
+        // things: laying out the incoming workspace, focusing, and hiding the ones being
+        // left are all Accessibility round trips to other applications, and only
+        // measurement says which dominates. Grep marker: TIMING.
+        let started = std::time::Instant::now();
+
+        // One frame for the whole change, not one per window.
+        //
+        // The three stages below all move windows: the incoming workspace is placed, one
+        // window is focused, and every other workspace is parked off-screen. Only the
+        // first was batched, so the incoming windows arrived together and then the
+        // outgoing ones left one at a time behind them. Held across all three, the screen
+        // shows the old workspace, then the new one, and nothing in between.
+        let _screen = crate::skylight::hold_screen_still();
+
+        let mut stage_layout = std::time::Duration::ZERO;
+        let mut stage_focus = std::time::Duration::ZERO;
+        let mut stage_hide = std::time::Duration::ZERO;
+        let mut hidden_windows = 0usize;
+
         let focused_idx = self.focused_workspace_idx();
         let monitor_id = self.id;
         let monitor_wp = self.wallpaper.clone();
@@ -267,7 +304,11 @@ impl Monitor {
         // Position windows at their correct grid slots FIRST (they go from
         // off-screen straight to their final position, with no intermediate step).
         if let Some(workspace) = self.workspaces_mut().get_mut(focused_idx) {
+            let t = std::time::Instant::now();
             workspace.update()?;
+            stage_layout = t.elapsed();
+
+            let t = std::time::Instant::now();
 
             for window in workspace.floating_windows_mut() {
                 window.restore()?;
@@ -289,14 +330,28 @@ impl Monitor {
                 window.focus(mouse_follows_focus)?;
             }
 
+            stage_focus = t.elapsed();
+
             workspace.apply_wallpaper(monitor_id, &monitor_wp)?;
         }
 
+        let t = std::time::Instant::now();
         for (i, workspace) in self.workspaces_mut().iter_mut().enumerate() {
             if i != focused_idx {
+                hidden_windows += workspace.containers().iter().map(|c| c.windows().len()).sum::<usize>();
                 workspace.hide(None)?;
             }
         }
+        stage_hide = t.elapsed();
+
+        tracing::warn!(
+            "TIMING workspace-change total={}ms layout={}ms focus={}ms hide={}ms ({} windows hidden)",
+            started.elapsed().as_millis(),
+            stage_layout.as_millis(),
+            stage_focus.as_millis(),
+            stage_hide.as_millis(),
+            hidden_windows
+        );
 
         Ok(())
     }
