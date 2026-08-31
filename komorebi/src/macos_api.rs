@@ -369,11 +369,13 @@ impl MacosApi {
                 let exe = window.exe().unwrap_or_default();
                 let title = window.title().unwrap_or_default();
 
-                let (target_monitor, target_ws) = session
+                // usize::MAX as the remembered slot means "no opinion": the window was
+                // not in the session, so it goes on the end like it always did.
+                let (target_monitor, target_ws, target_slot) = session
                     .as_mut()
                     .and_then(|s| s.take_match(window.id, &exe, &title))
-                    .filter(|(m, _)| wm.monitors.elements().get(*m).is_some())
-                    .unwrap_or((geom_monitor_idx, fallback_ws));
+                    .filter(|(m, _, _)| wm.monitors.elements().get(*m).is_some())
+                    .unwrap_or((geom_monitor_idx, fallback_ws, usize::MAX));
 
                 let mut container = Container::default();
                 container.windows_mut().push_back(window);
@@ -386,7 +388,21 @@ impl MacosApi {
                     // is idempotent).
                     monitor.ensure_workspace_count(target_ws + 1);
                     if let Some(workspace) = monitor.workspaces_mut().get_mut(target_ws) {
-                        workspace.containers_mut().push_back(container);
+                        // Into the slot it came from, so the grid is dealt out the way it
+                        // was left rather than in whatever order macOS enumerated the
+                        // windows -- which is by depth, and so follows what was looked at
+                        // most recently.
+                        //
+                        // Windows arrive in no particular order, so a remembered slot can
+                        // be past the end of what has been placed so far; it settles as
+                        // the rest arrive, and anything still out of range lands last.
+                        let containers = workspace.containers_mut();
+
+                        if target_slot <= containers.len() {
+                            containers.insert(target_slot, container);
+                        } else {
+                            containers.push_back(container);
+                        }
                     }
                 }
             }

@@ -1,10 +1,12 @@
 //! Session persistence: stores the window→workspace map so it can be
 //! restored after a `rset` (restarting komorebi while the apps stay alive).
 //!
-//! Only reliable as long as the apps aren't closed: Accessibility API window
-//! ids are stable for the lifetime of a process but change after rebooting the
-//! Mac or quitting/reopening an app. As a fallback we also match by app+title,
-//! which covers logout/login within the same boot (see take_match).
+//! Two things identify a window here, and they fail in different situations.
+//! Accessibility ids are exact but only last as long as the process, so they
+//! survive a `rset` and nothing else. App name plus title survives anything that
+//! reopens the same windows -- logging out and back in, and a full reboot with
+//! "reopen windows when logging back in" ticked -- at the cost of being a guess
+//! when two windows of one app share a title. Both are tried, ids first.
 
 use crate::DATA_DIR;
 use crate::window_manager::WindowManager;
@@ -24,6 +26,11 @@ pub struct SessionState {
     #[serde(default)]
     pub boot_uuid: String,
     pub windows: Vec<SessionWindow>,
+    /// Whether the window ids in here still refer to the windows they were
+    /// written for. False once the Mac has rebooted: the placements are still
+    /// worth having, but only what can be matched by name and title.
+    #[serde(skip)]
+    pub ids_are_current: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -38,6 +45,12 @@ pub struct SessionWindow {
     pub title: String,
     pub monitor: usize,
     pub workspace: usize,
+    /// Which slot of that workspace the window occupied. Without it the workspace
+    /// came back right but the grid cells were dealt out in whatever order macOS
+    /// happened to enumerate the windows in -- which is by depth, so it changed
+    /// with whatever had been looked at most recently.
+    #[serde(default)]
+    pub index: usize,
 }
 
 impl SessionState {
@@ -47,14 +60,23 @@ impl SessionState {
     ///   2. app + title      → best-effort, the logout/login case (new ids).
     /// Requiring the app to match avoids misplacing a window if a new id
     /// collides by chance with an old one from a different app.
-    pub fn take_match(&mut self, window_id: u32, exe: &str, title: &str) -> Option<(usize, usize)> {
-        if let Some(pos) = self
-            .windows
-            .iter()
-            .position(|w| w.window_id == window_id && w.exe == exe)
+    pub fn take_match(
+        &mut self,
+        window_id: u32,
+        exe: &str,
+        title: &str,
+    ) -> Option<(usize, usize, usize)> {
+        // Ids are only meaningful within the boot that issued them. Across a
+        // reboot macOS hands the same numbers out again, so an id that matches
+        // means nothing and could put a window on someone else's workspace.
+        if self.ids_are_current
+            && let Some(pos) = self
+                .windows
+                .iter()
+                .position(|w| w.window_id == window_id && w.exe == exe)
         {
             let w = self.windows.remove(pos);
-            return Some((w.monitor, w.workspace));
+            return Some((w.monitor, w.workspace, w.index));
         }
 
         if !title.is_empty()
@@ -64,7 +86,7 @@ impl SessionState {
                 .position(|w| w.exe == exe && w.title == title)
         {
             let w = self.windows.remove(pos);
-            return Some((w.monitor, w.workspace));
+            return Some((w.monitor, w.workspace, w.index));
         }
 
         None
@@ -107,15 +129,21 @@ pub fn load() -> Option<SessionState> {
     let contents = std::fs::read_to_string(session_path()).ok()?;
     let state: SessionState = serde_json::from_str(&contents).ok()?;
 
-    // Only valid within the same boot (the rset case). After a Mac reboot we
-    // discard the session so windows aren't placed by collided ids.
-    match boot_uuid() {
-        Some(current) if current == state.boot_uuid => Some(state),
-        _ => {
-            tracing::info!("ignoring session from a previous boot");
-            None
-        }
+    // A reboot used to throw all of this away, because window ids get reissued
+    // and one of them matching again would put a window wherever an unrelated
+    // window used to live. But the ids are the only part that goes stale: with
+    // "reopen windows when logging back in" ticked, macOS brings the same windows
+    // back with the same titles, and those still say where each one belongs.
+    //
+    // So the session is kept and the unreliable half of it is switched off.
+    let mut state = state;
+    state.ids_are_current = matches!(boot_uuid(), Some(current) if current == state.boot_uuid);
+
+    if !state.ids_are_current {
+        tracing::info!("session is from a previous boot: matching windows by name and title");
     }
+
+    Some(state)
 }
 
 /// Builds the current state and writes it to disk (only if it changed).
@@ -153,7 +181,7 @@ fn build(wm: &WindowManager) -> SessionState {
 
     for (m_idx, monitor) in wm.monitors.elements().iter().enumerate() {
         for (w_idx, workspace) in monitor.workspaces().iter().enumerate() {
-            for container in workspace.containers() {
+            for (c_idx, container) in workspace.containers().iter().enumerate() {
                 for window in container.windows() {
                     windows.push(SessionWindow {
                         window_id: window.id,
@@ -161,6 +189,7 @@ fn build(wm: &WindowManager) -> SessionState {
                         title: window.title().unwrap_or_default(),
                         monitor: m_idx,
                         workspace: w_idx,
+                        index: c_idx,
                     });
                 }
             }
@@ -172,10 +201,17 @@ fn build(wm: &WindowManager) -> SessionState {
                     title: window.title().unwrap_or_default(),
                     monitor: m_idx,
                     workspace: w_idx,
+                    // Floating windows are not in the grid, so they have no slot
+                    // to come back to.
+                    index: 0,
                 });
             }
         }
     }
 
-    SessionState { boot_uuid, windows }
+    SessionState {
+        boot_uuid,
+        windows,
+        ids_are_current: true,
+    }
 }
