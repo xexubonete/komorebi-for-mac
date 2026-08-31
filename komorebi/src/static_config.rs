@@ -1350,7 +1350,23 @@ impl StaticConfig {
                 }
 
                 monitor.ensure_workspace_count(monitor_config.workspaces.len());
-                monitor.work_area_offset = monitor_config.work_area_offset;
+
+                // Not unconditionally: forty lines up this monitor was given the global
+                // offset precisely so the layout paths that only see the monitor would
+                // apply it, and overwriting it with a per-monitor setting that is usually
+                // absent put it straight back to nothing.
+                //
+                // What that cost: one layout path reads the offset from the monitor and
+                // the other is handed the global one, so with the offset missing from the
+                // monitor the two disagreed by however much it was. Every placement then
+                // resized every window by that difference, and the next pass resized it
+                // back -- measured at 98% of placements resizing, for two points.
+                //
+                // The reload path below already guarded this. Only the first load did not.
+                if monitor.work_area_offset.is_none() {
+                    monitor.work_area_offset = monitor_config.work_area_offset;
+                }
+
                 monitor.window_based_work_area_offset =
                     monitor_config.window_based_work_area_offset;
                 monitor.window_based_work_area_offset_limit = monitor_config
@@ -1426,7 +1442,10 @@ impl StaticConfig {
                         monitor::new(0, Rect::default(), Rect::default(), "".into(), "".into());
 
                     m.ensure_workspace_count(monitor_config.workspaces.len());
-                    m.work_area_offset = monitor_config.work_area_offset;
+                    // Falls back to the global offset, like a monitor that is already
+                    // connected. Without it this one would lay windows out two points
+                    // away from every other path the moment it appears.
+                    m.work_area_offset = monitor_config.work_area_offset.or(offset);
                     m.window_based_work_area_offset = monitor_config.window_based_work_area_offset;
                     m.window_based_work_area_offset_limit = monitor_config
                         .window_based_work_area_offset_limit
@@ -1598,7 +1617,10 @@ impl StaticConfig {
                         monitor::new(0, Rect::default(), Rect::default(), "".into(), "".into());
 
                     m.ensure_workspace_count(monitor_config.workspaces.len());
-                    m.work_area_offset = monitor_config.work_area_offset;
+                    // Falls back to the global offset, like a monitor that is already
+                    // connected. Without it this one would lay windows out two points
+                    // away from every other path the moment it appears.
+                    m.work_area_offset = monitor_config.work_area_offset.or(offset);
                     m.window_based_work_area_offset = monitor_config.window_based_work_area_offset;
                     m.window_based_work_area_offset_limit = monitor_config
                         .window_based_work_area_offset_limit
