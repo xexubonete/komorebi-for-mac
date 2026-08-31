@@ -31,36 +31,60 @@ pub struct Notification {
 /// been overtaken.
 pub static USER_WORKSPACE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Windows komorebi focused itself, and has not yet seen the resulting event for.
+/// The window komorebi focused itself, most recently.
 ///
 /// Focusing a window makes macOS report a focus change, which arrives indistinguishable
 /// from the user clicking on it. Changing workspace focuses the window waiting there, so
 /// moving 3 -> 2 -> 1 quickly leaves komorebi reacting to its own focus changes for
 /// workspaces the user is passing through -- and reconciling back to one of them.
+///
+/// This used to be a queue with the record removed on the first match, and that was the
+/// bug: **one focus produces several reports**, not one. Focusing a window makes macOS
+/// send AXFocusedWindowChanged, then AXApplicationActivated, then AXMainWindowChanged,
+/// then NSWorkspaceDidActivateApplication. The first was recognised as komorebi's own and
+/// took the record with it; the rest arrived to find nothing and were taken for the user
+/// changing windows. Measured: every stray reconciliation was triggered by one of the
+/// later three, never by the first.
+///
+/// So a record is never consumed by the report that matches it. It has to survive two
+/// things at once, and getting either wrong brings the bug back:
+///
+/// * **The whole burst for one window.** Removing the record on the first report left the
+///   other three unrecognised.
+/// * **The bursts of several windows at the same time.** Navigating 1 -> 2 quickly means
+///   komorebi focuses a window on each, and the reports for the first arrive around 400ms
+///   later, well after it has focused the second. A single slot is overwritten by then,
+///   and the late report for the first window looks like the user asking to go back to
+///   where it lives. Measured: exactly this, with the reconciliation landing on the
+///   workspace the user had passed through.
+///
+/// Hence a short history rather than one slot. Eight covers far more rapid navigation
+/// than any burst outlives, and the oldest entry falls off the end.
 static FOCUS_WE_CAUSED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+const FOCUS_HISTORY: usize = 8;
 
 /// Record that komorebi is about to focus this window itself.
 pub fn note_focus_we_caused(window_id: u32) {
     let mut ours = FOCUS_WE_CAUSED.lock();
 
-    // Bounded: a focus call whose event never arrives must not accumulate.
-    if ours.len() > 16 {
+    // Already the most recent? Then re-recording it would push out an older entry that is
+    // still waiting for its reports to arrive.
+    if ours.last() == Some(&window_id) {
+        return;
+    }
+
+    ours.retain(|id| *id != window_id);
+    ours.push(window_id);
+
+    if ours.len() > FOCUS_HISTORY {
         ours.remove(0);
     }
-
-    ours.push(window_id);
 }
 
-/// Whether this focus change is one komorebi caused. Consumes the record.
+/// Whether this focus change is one komorebi caused.
 pub fn focus_was_ours(window_id: u32) -> bool {
-    let mut ours = FOCUS_WE_CAUSED.lock();
-
-    if let Some(pos) = ours.iter().position(|id| *id == window_id) {
-        ours.remove(pos);
-        return true;
-    }
-
-    false
+    FOCUS_WE_CAUSED.lock().contains(&window_id)
 }
 
 
@@ -105,7 +129,13 @@ pub fn send_notification(
     }
 
     if !RECONCILIATION_IN_PROGRESS.load(Ordering::Relaxed) {
-        tracing::debug!("sending reconciliation request");
+        // TRACE: reconciliation is the only thing that changes workspace without the user
+        // asking, so when the workspace ends up somewhere unexpected this is the first
+        // place to look. Grep marker: RECONCILE.
+        tracing::warn!(
+            "RECONCILE raised monitor={monitor_idx} workspace={workspace_idx} generation={} trigger={triggered_by:?}",
+            USER_WORKSPACE_GENERATION.load(Ordering::SeqCst)
+        );
         if event_tx()
             .try_send(Notification {
                 monitor_idx,
@@ -151,8 +181,13 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
     for notification in &receiver {
         // Overtaken by the user: they have navigated since this was raised, so acting on
         // it would drag them back to a workspace they already left.
-        if notification.generation != USER_WORKSPACE_GENERATION.load(Ordering::SeqCst) {
-            tracing::debug!("user has navigated since this was raised, dropping it");
+        let generation_now = USER_WORKSPACE_GENERATION.load(Ordering::SeqCst);
+
+        if notification.generation != generation_now {
+            tracing::warn!(
+                "RECONCILE dropped (raised at generation {}, user is now at {generation_now})",
+                notification.generation
+            );
             continue;
         }
 
@@ -188,7 +223,11 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 continue;
             }
 
-            tracing::info!("reconciliating workspace");
+            tracing::warn!(
+                "RECONCILE acting: {focused_monitor_idx}/{focused_workspace_idx} -> {}/{}",
+                notification.monitor_idx,
+                notification.workspace_idx
+            );
             wm.focus_monitor(notification.monitor_idx)?;
             let mouse_follows_focus = wm.mouse_follows_focus;
 
@@ -222,6 +261,12 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 if triggered_by_managed_window {
                     monitor.load_focused_workspace(mouse_follows_focus)?;
                 } else {
+                    // This is the branch that changes workspace and focuses nothing --
+                    // exactly what "it jumped somewhere and no window has focus" looks
+                    // like from the outside.
+                    tracing::warn!(
+                        "RECONCILE trigger is not a window komorebi manages; switching without taking focus"
+                    );
                     monitor.load_focused_workspace_without_taking_focus(mouse_follows_focus)?;
                 }
             }
