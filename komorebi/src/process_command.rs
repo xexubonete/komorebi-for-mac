@@ -142,9 +142,12 @@ impl WindowManager {
         // whatever was asked for. Grep marker: TIMING command.
         let command_started = std::time::Instant::now();
 
+        // Only worth taking when something will actually be compared against it. See
+        // any_subscriber_filters_state_changes.
         #[allow(clippy::useless_asref)]
         // We don't have From implemented for &mut WindowManager
-        let initial_state = State::from(self.as_ref());
+        let initial_state = crate::any_subscriber_filters_state_changes()
+            .then(|| State::from(self.as_ref()));
 
         let stage_snapshot = command_started.elapsed();
         let t = std::time::Instant::now();
@@ -1865,19 +1868,60 @@ impl WindowManager {
         let stage_work = t.elapsed();
         let t = std::time::Instant::now();
 
+        // TIMING: what happens after the command has already done its job. Measured at
+        // 59ms on average and 132 at worst for a focus change whose actual work was 28 --
+        // more than half the time between the key press and the window responding, spent
+        // after the decision was made. Split three ways because they are three unrelated
+        // things: an in-memory index, a snapshot pushed to whoever is subscribed, and a
+        // nudge to the border thread.
         self.update_known_window_ids();
 
-        notify_subscribers(
-            Notification {
-                event: NotificationEvent::Socket(message.clone()),
-                state: self.as_ref().into(),
-            },
-            initial_state.has_been_modified(self.as_ref()),
-        )?;
+        let notify_index = t.elapsed();
+        let n = std::time::Instant::now();
 
+        // Built only for someone to receive. The snapshot is a copy of every monitor,
+        // workspace, container and window, and each of those windows holds an
+        // accessibility handle that is retained on the way in and released on the way
+        // out. With nobody subscribed that is a whole state tree assembled and torn down
+        // per command, for no reader.
+        let notify_snapshot = n.elapsed();
+        let n = std::time::Instant::now();
+
+        let modified = initial_state
+            .as_ref()
+            .is_some_and(|initial| initial.has_been_modified(self.as_ref()));
+        let notify_diff = n.elapsed();
+        let n = std::time::Instant::now();
+
+        if crate::any_subscribers() {
+            notify_subscribers(
+                Notification {
+                    event: NotificationEvent::Socket(message.clone()),
+                    state: self.as_ref().into(),
+                },
+                modified,
+            )?;
+        }
+
+        let notify_push = n.elapsed();
+
+        // Left for the border thread before the lock is released, so it has everything it
+        // needs the moment it wakes rather than queueing for the window manager.
+        border_manager::publish_snapshot(self.as_ref());
         border_manager::send_notification(None, None, false);
 
         let stage_notify = t.elapsed();
+
+        if stage_notify.as_millis() >= 5 {
+            tracing::warn!(
+                "TIMING notify total={}ms index={}ms snapshot={}ms diff={}ms push={}ms",
+                stage_notify.as_millis(),
+                notify_index.as_millis(),
+                notify_snapshot.as_millis(),
+                notify_diff.as_millis(),
+                notify_push.as_millis()
+            );
+        }
 
         tracing::warn!(
             "TIMING command total={}ms snapshot={}ms unmanaged={}ms work={}ms notify={}ms ({})",

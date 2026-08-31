@@ -207,6 +207,37 @@ pub struct Notification {
     pub state: State,
 }
 
+/// Whether anyone is listening who needs to be told *whether the state changed*.
+///
+/// Working that out means comparing the whole state before and after, and that comparison
+/// walks every window and compares its accessibility element -- which is a call into the
+/// process that owns it, one per window. Measured at 52ms of a focus command whose actual
+/// work was 28, spent deciding something nobody had asked to know: subscribers that do not
+/// filter get sent everything regardless, and with no subscribers at all there is nothing
+/// to decide.
+/// Whether anyone is subscribed at all.
+pub fn any_subscribers() -> bool {
+    !SUBSCRIPTION_SOCKETS.lock().is_empty()
+}
+
+pub fn any_subscriber_filters_state_changes() -> bool {
+    let sockets = SUBSCRIPTION_SOCKETS.lock();
+
+    if sockets.is_empty() {
+        return false;
+    }
+
+    let options = SUBSCRIPTION_SOCKET_OPTIONS.lock();
+
+    sockets.keys().any(|socket| {
+        options
+            .get(socket)
+            .copied()
+            .unwrap_or_default()
+            .filter_state_changes
+    })
+}
+
 pub fn notify_subscribers(
     notification: Notification,
     state_has_been_modified: bool,
@@ -222,9 +253,17 @@ pub fn notify_subscribers(
             | NotificationEvent::WindowManager(WindowManagerEvent::Show(_, _)) // | NotificationEvent::WindowManager(WindowManagerEvent::Uncloak(_, _))
     );
 
+    let mut sockets = SUBSCRIPTION_SOCKETS.lock();
+
+    // Nobody subscribed, nothing to serialise. Turning the whole state into JSON costs
+    // 39ms on this machine, and it was being paid on every command before anyone looked
+    // at whether there was a single socket to send it to.
+    if sockets.is_empty() {
+        return Ok(());
+    }
+
     let notification = &serde_json::to_string(&notification)?;
     let mut stale_sockets = vec![];
-    let mut sockets = SUBSCRIPTION_SOCKETS.lock();
     let options = SUBSCRIPTION_SOCKET_OPTIONS.lock();
 
     for (socket, path) in &mut *sockets {
