@@ -1724,6 +1724,10 @@ impl WindowManager {
         // workspace they have already left. See USER_WORKSPACE_GENERATION.
         crate::workspace_reconciliator::note_user_changed_workspace();
 
+        // TRACE: pairs with the RECONCILE lines. Every user-driven workspace change bumps
+        // the generation, and anything raised at an older one is stale by definition.
+        tracing::warn!("RECONCILE user navigating to workspace {idx}");
+
         let mouse_follows_focus = self.mouse_follows_focus;
         let monitor = self
             .focused_monitor_mut()
@@ -1732,6 +1736,7 @@ impl WindowManager {
         monitor.focus_workspace(idx)?;
         monitor.load_focused_workspace(mouse_follows_focus)?;
 
+        crate::border_manager::publish_snapshot(self);
         crate::border_manager::event_tx()
             .try_send(crate::border_manager::Notification::ForceUpdate)
             .ok();
@@ -1756,6 +1761,7 @@ impl WindowManager {
         monitor.move_container_to_workspace(idx, follow, direction)?;
         monitor.load_focused_workspace(mouse_follows_focus)?;
 
+        crate::border_manager::publish_snapshot(self);
         crate::border_manager::event_tx()
             .try_send(crate::border_manager::Notification::ForceUpdate)
             .ok();

@@ -192,6 +192,61 @@ pub fn window_border(window_id: u32) -> Option<BorderInfo> {
     })
 }
 
+/// When the most recent border notification was raised, so the delay until the border
+/// actually changes can be measured.
+pub static NOTIFICATION_SENT: parking_lot::Mutex<Option<std::time::Instant>> =
+    parking_lot::Mutex::new(None);
+
+/// Everything the border thread needs to know about the window manager, handed over
+/// rather than fetched.
+///
+/// The border thread used to take the window manager lock to read this. It could not have
+/// it: whatever command had just moved the focus was still holding it, and behind that
+/// came the four Accessibility reports that one focus produces, each taking the lock in
+/// turn. Measured, the border spent 31ms of its 47ms average delay simply queueing --
+/// while macOS had already redrawn the window as focused, which is exactly the gap that
+/// is visible.
+///
+/// So the side that already holds the lock leaves a copy behind on its way out, and the
+/// border thread reads that. Nothing is recomputed, only relocated: the same clone, made
+/// by a thread that was not going to be waiting for it.
+pub struct BorderSnapshot {
+    pub is_paused: bool,
+    pub focused_monitor_idx: usize,
+    pub focused_workspace_idx: usize,
+    pub monitors: Ring<crate::monitor::Monitor>,
+    pub pending_move_op: Option<(usize, usize, u32)>,
+    pub floating_window_hwnds: Vec<u32>,
+    pub workspace_layer: WorkspaceLayer,
+}
+
+static BORDER_SNAPSHOT: Mutex<Option<BorderSnapshot>> = Mutex::new(None);
+
+/// Leave the border thread what it needs, before releasing the window manager.
+pub fn publish_snapshot(state: &WindowManager) {
+    let focused_monitor_idx = state.focused_monitor_idx();
+
+    let Some(monitor) = state.monitors.elements().get(focused_monitor_idx) else {
+        return;
+    };
+
+    let focused_workspace_idx = monitor.focused_workspace_idx();
+
+    let Some(workspace) = monitor.workspaces().get(focused_workspace_idx) else {
+        return;
+    };
+
+    *BORDER_SNAPSHOT.lock() = Some(BorderSnapshot {
+        is_paused: state.is_paused,
+        focused_monitor_idx,
+        focused_workspace_idx,
+        pending_move_op: *state.pending_move_op,
+        floating_window_hwnds: workspace.floating_windows().iter().map(|w| w.id).collect(),
+        workspace_layer: workspace.layer,
+        monitors: state.monitors.clone(),
+    });
+}
+
 pub fn send_notification(
     element: Option<AccessibilityUiElement>,
     window_id: Option<u32>,
@@ -199,6 +254,7 @@ pub fn send_notification(
 ) {
     if event_tx()
         .try_send(Notification::Update(element, window_id, reaper))
+        .inspect(|()| *NOTIFICATION_SENT.lock() = Some(std::time::Instant::now()))
         .is_err()
     {
         tracing::warn!("channel is full; dropping notification")
@@ -370,22 +426,70 @@ fn handle_notifications(
             }
         }
 
-        let state = wm.lock();
-        let is_paused = state.is_paused;
-        let focused_monitor_idx = state.focused_monitor_idx();
-        let focused_workspace_idx =
-            state.monitors.elements()[focused_monitor_idx].focused_workspace_idx();
-        let monitors = state.monitors.clone();
-        let pending_move_op = *state.pending_move_op;
-        let floating_window_hwnds = state.monitors.elements()[focused_monitor_idx].workspaces()
-            [focused_workspace_idx]
-            .floating_windows()
-            .iter()
-            .map(|w| w.id)
-            .collect::<Vec<_>>();
-        let workspace_layer = state.monitors.elements()[focused_monitor_idx].workspaces()
-            [focused_workspace_idx]
-            .layer;
+        // TIMING: how long after being told does the border actually change. macOS has
+        // already redrawn the window as focused by then, so any gap here is visible.
+        // Grep marker: TIMING border.
+        let raised = if notification.is_some() {
+            NOTIFICATION_SENT.lock().take()
+        } else {
+            None
+        };
+
+        // Handed over with the notification when there is one; only the deadline wake-up,
+        // which nobody is waiting on, still goes and asks.
+        let handed_over = if notification.is_some() {
+            BORDER_SNAPSHOT.lock().take()
+        } else {
+            None
+        };
+
+        let waiting_for_lock = std::time::Instant::now();
+
+        let (
+            is_paused,
+            focused_monitor_idx,
+            focused_workspace_idx,
+            monitors,
+            pending_move_op,
+            floating_window_hwnds,
+            workspace_layer,
+        ) = match handed_over {
+            Some(snapshot) => (
+                snapshot.is_paused,
+                snapshot.focused_monitor_idx,
+                snapshot.focused_workspace_idx,
+                snapshot.monitors,
+                snapshot.pending_move_op,
+                snapshot.floating_window_hwnds,
+                snapshot.workspace_layer,
+            ),
+            None => {
+                let state = wm.lock();
+                let focused_monitor_idx = state.focused_monitor_idx();
+                let focused_workspace_idx =
+                    state.monitors.elements()[focused_monitor_idx].focused_workspace_idx();
+
+                (
+                    state.is_paused,
+                    focused_monitor_idx,
+                    focused_workspace_idx,
+                    state.monitors.clone(),
+                    *state.pending_move_op,
+                    state.monitors.elements()[focused_monitor_idx].workspaces()
+                        [focused_workspace_idx]
+                        .floating_windows()
+                        .iter()
+                        .map(|w| w.id)
+                        .collect::<Vec<_>>(),
+                    state.monitors.elements()[focused_monitor_idx].workspaces()
+                        [focused_workspace_idx]
+                        .layer,
+                )
+            }
+        };
+
+        let lock_wait = waiting_for_lock.elapsed();
+        let border_work = std::time::Instant::now();
         let foreground_window = MacosApi::foreground_window_id().unwrap_or_default();
 
         // Is the window in front one of ours?
@@ -431,7 +535,8 @@ fn handle_notifications(
         let _layer_changed = previous_layer != workspace_layer;
         let _forced_update = matches!(notification, Some(Notification::ForceUpdate));
 
-        drop(state);
+        // No drop needed: the window manager, on the rare path that still consults it, is
+        // released as soon as the values above have been read out of it.
 
         let should_process_notification = match notification {
             // Woken by the deadline rather than by a notification. Nothing has been
@@ -791,6 +896,15 @@ fn handle_notifications(
             previous_notification = notification;
         }
         previous_layer = workspace_layer;
+
+        if let Some(raised) = raised {
+            tracing::warn!(
+                "TIMING border delay={}ms lock={}ms work={}ms",
+                raised.elapsed().as_millis(),
+                lock_wait.as_millis(),
+                border_work.elapsed().as_millis()
+            );
+        }
     }
 
     Ok(())
