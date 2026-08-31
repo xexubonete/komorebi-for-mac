@@ -221,7 +221,15 @@ impl Monitor {
         // the border cannot outlive its window. The command that asked for the change
         // sends a border refresh once it finishes, which draws the new one.
         if idx != self.focused_workspace_idx() {
+            // TIMING: taking the borders down hops to the main thread and waits, once per
+            // border. Grep marker: TIMING borders-down.
+            let t = std::time::Instant::now();
             crate::border_manager::destroy_all_borders()?;
+            let elapsed = t.elapsed();
+
+            if elapsed.as_millis() >= 2 {
+                tracing::warn!("TIMING borders-down took={}ms", elapsed.as_millis());
+            }
         }
 
         {
@@ -335,13 +343,25 @@ impl Monitor {
             workspace.apply_wallpaper(monitor_id, &monitor_wp)?;
         }
 
+        // Every workspace being left, parked in one batch.
+        //
+        // One workspace at a time meant each waited for the one before it, so a single
+        // slow application anywhere on the monitor held up all of them -- and it is always
+        // the same application. Collected together, the cost is the slowest one rather
+        // than the sum, and windows of the same application still go one after another
+        // because that is grouped by process inside.
         let t = std::time::Instant::now();
+        let hiding_position = self.window_hiding_position;
+        let mut to_hide = Vec::new();
+
         for (i, workspace) in self.workspaces_mut().iter_mut().enumerate() {
             if i != focused_idx {
-                hidden_windows += workspace.containers().iter().map(|c| c.windows().len()).sum::<usize>();
-                workspace.hide(None)?;
+                to_hide.extend(workspace.windows_to_hide(None)?);
             }
         }
+
+        hidden_windows = to_hide.len();
+        crate::workspace::hide_in_parallel(to_hide, hiding_position);
         stage_hide = t.elapsed();
 
         tracing::warn!(

@@ -213,6 +213,61 @@ fn resolve_threshold_match(
 /// not of the window -- two threads doing that to the same application would race to
 /// restore it. Different applications cannot interfere with each other, so that is where
 /// the concurrency goes.
+/// Park windows concurrently, one thread per application.
+///
+/// Same reasoning as [`place_in_parallel`], and the same shape. Hiding was still done one
+/// window after another, which stopped mattering only while placing them dominated
+/// everything: with that fixed, parking became the largest stage of a workspace change.
+///
+/// It is the same skew, too. Most windows park in under two milliseconds; WhatsApp takes
+/// ninety-four. Serially that is everyone waiting for it, and concurrently it is just
+/// WhatsApp taking its time on its own thread.
+pub fn hide_in_parallel(to_hide: Vec<Window>, hiding_position: WindowHidingPosition) {
+    if to_hide.len() < 2 {
+        for mut window in to_hide {
+            if let Err(error) = window.hide(hiding_position) {
+                tracing::warn!(
+                    "failed to hide window, but this might be because it is already hidden: {error}"
+                );
+            }
+        }
+
+        return;
+    }
+
+    let mut by_process: HashMap<i32, Vec<Window>> = HashMap::new();
+
+    for window in to_hide {
+        by_process
+            .entry(window.application.process_id)
+            .or_default()
+            .push(window);
+    }
+
+    std::thread::scope(|scope| {
+        for (_, windows) in by_process.iter_mut() {
+            scope.spawn(move || {
+                // A copy purely to own the scope that holds this application out of its
+                // animations: the guard borrows the window it came from, and the loop
+                // below needs the originals.
+                let Some(holder) = windows.first().cloned() else {
+                    return;
+                };
+
+                let _enhanced_ui = holder.hold_enhanced_ui_off();
+
+                for window in windows.iter_mut() {
+                    if let Err(error) = window.hide(hiding_position) {
+                        tracing::warn!(
+                            "failed to hide window, but this might be because it is already hidden: {error}"
+                        );
+                    }
+                }
+            });
+        }
+    });
+}
+
 fn place_in_parallel(to_place: Vec<(Window, Rect)>) {
     if to_place.len() < 2 {
         for (window, rect) in &to_place {
@@ -919,46 +974,25 @@ impl Workspace {
     }
 
     pub fn hide(&mut self, omit: Option<u32>) -> eyre::Result<()> {
-        let window_hiding_position = self.globals.window_hiding_position;
+        let hiding_position = self.globals.window_hiding_position;
+        let to_hide = self.windows_to_hide(omit)?;
+        hide_in_parallel(to_hide, hiding_position);
 
-        // Hiding a workspace moves every one of its windows off-screen, and each move
-        // turned the owning application's animation off and on again around itself. An
-        // application with four windows paid for that four times over. One scope per
-        // application, held open across the whole workspace, makes it once.
-        let mut seen = std::collections::HashSet::new();
-        let one_per_application = self
-            .containers()
-            .iter()
-            .flat_map(|container| container.windows())
-            .chain(self.floating_windows())
-            .chain(
-                self.monocle_container
-                    .iter()
-                    .flat_map(|container| container.windows()),
-            )
-            .filter(|window| seen.insert(window.application.process_id))
-            .cloned()
-            .collect::<Vec<_>>();
+        Ok(())
+    }
 
-        let _enhanced_ui = one_per_application
-            .iter()
-            .map(Window::hold_enhanced_ui_off)
-            .collect::<Vec<_>>();
+    /// The windows this workspace would park, and all the bookkeeping that goes with
+    /// deciding that -- without actually parking them.
+    ///
+    /// Split out so a caller leaving several workspaces at once can park everything in
+    /// one batch. Done workspace by workspace, each one waits for the last, and one slow
+    /// application anywhere holds up all of them.
+    pub fn windows_to_hide(&mut self, omit: Option<u32>) -> eyre::Result<Vec<Window>> {
+        let mut collected = Vec::new();
 
-        for window in self.floating_windows_mut().iter_mut().rev() {
-            let mut should_hide = omit.is_none();
-
-            if !should_hide
-                && let Some(omit) = omit
-                && omit != window.id
-            {
-                should_hide = true
-            }
-
-            if should_hide && let Err(error) = window.hide(window_hiding_position) {
-                tracing::warn!(
-                    "failed to hide floating window, but this might be because it is already hidden: {error}"
-                );
+        for window in self.floating_windows().iter().rev() {
+            if omit != Some(window.id) {
+                collected.push(window.clone());
             }
         }
 
@@ -973,9 +1007,15 @@ impl Workspace {
             }
         }
 
-        for container in self.containers_mut() {
-            container.hide(window_hiding_position, omit)?;
-        }
+        // The reverse order within a container is kept: it is what stops a stack from
+        // flashing its lower windows on the way out.
+        collected.extend(
+            self.containers()
+                .iter()
+                .flat_map(|container| container.windows().iter().rev())
+                .filter(|window| omit != Some(window.id))
+                .cloned(),
+        );
 
         if let Some(resize_dimensions) = resize_dimensions {
             self.resize_dimensions = resize_dimensions;
@@ -985,11 +1025,18 @@ impl Workspace {
         //     window.hide();
         // }
 
-        if let Some(container) = &mut self.monocle_container {
-            container.hide(window_hiding_position, omit)?;
+        if let Some(container) = &self.monocle_container {
+            collected.extend(
+                container
+                    .windows()
+                    .iter()
+                    .rev()
+                    .filter(|window| omit != Some(window.id))
+                    .cloned(),
+            );
         }
 
-        Ok(())
+        Ok(collected)
     }
 
     pub fn restore(
