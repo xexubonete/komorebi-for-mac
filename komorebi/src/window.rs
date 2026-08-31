@@ -131,6 +131,23 @@ lazy_static::lazy_static! {
         parking_lot::Mutex::new(HashMap::new());
 }
 
+/// Window titles, asked for once and remembered.
+///
+/// Saving the session names every window by application and title so the layout can be
+/// rebuilt after a login, and that happens after every command -- so every command was
+/// asking every window for its title, one call into its process each.
+///
+/// Unlike an application's name, a title genuinely changes: a terminal follows the
+/// directory, a browser follows the tab. macOS says when, and komorebi is already
+/// listening for it on every window, so the entry is dropped then and read again once.
+static WINDOW_TITLES: LazyLock<parking_lot::Mutex<HashMap<u32, Option<String>>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+/// The title this window has changed, or it has gone: ask again next time.
+pub fn forget_title(window_id: u32) {
+    WINDOW_TITLES.lock().remove(&window_id);
+}
+
 /// Move and resize events komorebi's own placements are about to cause.
 ///
 /// Moving a window makes macOS report that the window moved, and that report arrives
@@ -170,20 +187,38 @@ pub fn forget_position(window_id: u32) {
     SELF_MOVE_ECHOES.lock().remove(&window_id);
 }
 
+/// A window that has gone: nothing remembered about it is worth keeping, and the next
+/// window to be handed this id is a different one.
+pub fn forget_window(window_id: u32) {
+    forget_position(window_id);
+    forget_title(window_id);
+}
+
 /// TIMING: reports how long hiding one window took, however it returns.
 struct TimedHide {
     started: std::time::Instant,
     window_id: u32,
+    application: Option<String>,
 }
+
+/// How long the geometry read at the top of `hide` took, per window.
+static HIDE_READ: LazyLock<parking_lot::Mutex<HashMap<u32, std::time::Duration>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
 impl Drop for TimedHide {
     fn drop(&mut self) {
         let elapsed = self.started.elapsed();
         if elapsed.as_millis() >= 2 {
             tracing::warn!(
-                "TIMING hide window={} took={}ms",
+                "TIMING hide window={} app={:?} took={}ms read={}ms",
                 self.window_id,
-                elapsed.as_millis()
+                self.application.clone().unwrap_or_default(),
+                elapsed.as_millis(),
+                HIDE_READ
+                    .lock()
+                    .remove(&self.window_id)
+                    .unwrap_or_default()
+                    .as_millis()
             );
         }
     }
@@ -340,6 +375,15 @@ unsafe extern "C-unwind" fn window_observer_callback(
             element.as_ref().pid(NonNull::from_mut(&mut process_id));
 
             let window_id = AccessibilityApi::window_id(element.as_ref()).ok();
+
+            // The one thing that makes a remembered title wrong. Dropped here rather than
+            // further in, because this callback sees every window notification whether or
+            // not it turns into something komorebi acts on.
+            if notification.as_ref().to_string() == kAXTitleChangedNotification
+                && let Some(window_id) = window_id
+            {
+                forget_title(window_id);
+            }
 
             if let Ok(notification) =
                 AccessibilityNotification::from_str(&notification.as_ref().to_string())
@@ -599,9 +643,25 @@ impl Window {
         let _timing = TimedHide {
             started,
             window_id: self.id,
+            application: self.application.name(),
         };
 
-        let rect = MacosApi::window_rect(&self.element)?;
+        // Hiding needs to know where the window is, to note the restore point and to work
+        // out which display it is on. It used to ask the application, and that turned out
+        // to be the whole cost of hiding: 144ms of WhatsApp's 144ms, 42 of Mail's 43.
+        // Parking the window afterwards is nearly free by comparison.
+        //
+        // The answer is already known. Komorebi put the window where it is and remembers
+        // doing so, and that memory is dropped the moment anything else moves it. Asking
+        // was asking a question it had written down.
+        let reading_started = std::time::Instant::now();
+
+        let rect = match CONFIRMED_POSITIONS.lock().get(&self.id).copied() {
+            Some(known) => objc2_core_foundation::CGRect::from(known),
+            None => MacosApi::window_rect(&self.element)?,
+        };
+
+        HIDE_READ.lock().insert(self.id, reading_started.elapsed());
 
         let mut window_restore_positions = WINDOW_RESTORE_POSITIONS.lock();
         if let Entry::Vacant(entry) = window_restore_positions.entry(self.id) {
@@ -635,6 +695,25 @@ impl Window {
             // is not a cheap no-op: the application relayouts its whole interface before
             // answering. WhatsApp charges up to 240ms for one. Compare first and only
             // ask for what actually differs.
+            // Already parked exactly here? Then there is nothing to do.
+            //
+            // Every workspace change parks every window of every workspace being left,
+            // whether or not it was already parked, so most of that work is repeated for
+            // windows that have not moved since the last time. With five workspaces open
+            // it is most of the parking done.
+            //
+            // The comparison is against what komorebi recorded when it put the window
+            // there, not against a guess at whether it is hidden. That record is dropped
+            // the moment anything else moves the window, so a window that came back for
+            // any reason does not match and gets parked properly.
+            if CONFIRMED_POSITIONS
+                .lock()
+                .get(&self.id)
+                .is_some_and(|known| *known == Rect::from(hidden_rect))
+            {
+                return Ok(());
+            }
+
             let resizing = hidden_rect.size.width != rect.size.width
                 || hidden_rect.size.height != rect.size.height;
 
@@ -729,8 +808,26 @@ impl Window {
     }
 
     pub fn title(&self) -> Option<String> {
-        AccessibilityApi::copy_attribute_value::<CFString>(&self.element, kAXTitleAttribute)
-            .map(|s| s.to_string())
+        if let Some(known) = WINDOW_TITLES.lock().get(&self.id) {
+            return known.clone();
+        }
+
+        let title = AccessibilityApi::copy_attribute_value::<CFString>(
+            &self.element,
+            kAXTitleAttribute,
+        )
+        .map(|s| s.to_string());
+
+        // Only a real title is worth remembering. A window that has no title yet is not
+        // a window with no title: it is one that has not finished opening, and the answer
+        // changes within milliseconds. Remembering the empty answer freezes it -- and
+        // whether komorebi manages a window at all depends on it having a title, so a
+        // window caught at that moment would be ignored for as long as it stayed open.
+        if title.as_deref().is_some_and(|title| !title.is_empty()) {
+            WINDOW_TITLES.lock().insert(self.id, title.clone());
+        }
+
+        title
     }
 
     pub fn exe(&self) -> Option<String> {
@@ -860,6 +957,7 @@ impl Window {
         // relayout its whole interface for a value it already has -- measured at over
         // 100ms per pass for WhatsApp, and it happens on every workspace change.
         let mut size_already_correct = false;
+        let mut had_size = (0, 0);
 
         // TIMING: the cost of asking the application where its window is, before moving
         // it. This is the read a working position cache would remove -- every placement
@@ -879,6 +977,7 @@ impl Window {
         let stage_ask = asking_started.elapsed();
 
         if let Some(current) = current_position {
+            had_size = (current.right, current.bottom);
 
             if current.right == rect.right && current.bottom == rect.bottom {
                 size_already_correct = true;
@@ -1015,14 +1114,18 @@ impl Window {
         let elapsed = started.elapsed();
         if elapsed.as_millis() >= 2 {
             tracing::warn!(
-                "TIMING set_position window={} app={:?} took={}ms ask={}ms write={}ms readback={}ms resized={}",
+                "TIMING set_position window={} app={:?} took={}ms ask={}ms write={}ms readback={}ms resized={} had={}x{} want={}x{}",
                 self.id,
                 application.unwrap_or_default(),
                 elapsed.as_millis(),
                 stage_ask.as_millis(),
                 stage_write.as_millis(),
                 elapsed.saturating_sub(stage_write).as_millis(),
-                !size_already_correct
+                !size_already_correct,
+                had_size.0,
+                had_size.1,
+                rect.right,
+                rect.bottom
             );
         }
 
@@ -1120,7 +1223,10 @@ impl Window {
         // recognised as an echo rather than as the user going somewhere.
         crate::workspace_reconciliator::note_focus_we_caused(self.id);
 
-
+        // TIMING: focusing one window costs as much as laying out a whole workspace --
+        // 43ms measured, against 40ms for placing every window on it. Three different
+        // things happen in here and only measurement says which one it is.
+        let focus_started = std::time::Instant::now();
 
         match self.running_application() {
             Ok(running_application) => {
@@ -1134,6 +1240,9 @@ impl Window {
                 );
             }
         }
+
+        let stage_activate = focus_started.elapsed();
+        let t = std::time::Instant::now();
 
         let cf_boolean = CFBoolean::new(true);
         let value = &**cf_boolean;
@@ -1162,10 +1271,47 @@ impl Window {
             self.element.clone()
         };
 
+        let stage_element = t.elapsed();
+        let t = std::time::Instant::now();
+
         AccessibilityApi::set_attribute_cf_value(&element_to_focus, kAXMainAttribute, value)?;
 
+        let stage_main = t.elapsed();
+        let t = std::time::Instant::now();
+
         if mouse_follows_focus {
-            MacosApi::center_cursor_in_rect(&MacosApi::window_rect(&element_to_focus)?.into())?
+            // Same story as hiding: this read is 44ms of WhatsApp's 67ms focus, spent
+            // asking where a window is in order to put the pointer in the middle of it.
+            //
+            // Only when the element being focused is this window's own. A tabbed
+            // application can hand back a different element above, and what komorebi
+            // remembers is about this one.
+            let known = if is_tabbed {
+                None
+            } else {
+                CONFIRMED_POSITIONS.lock().get(&self.id).copied()
+            };
+
+            let rect = match known {
+                Some(known) => known,
+                None => MacosApi::window_rect(&element_to_focus)?.into(),
+            };
+
+            MacosApi::center_cursor_in_rect(&rect)?
+        }
+
+        let elapsed = focus_started.elapsed();
+        if elapsed.as_millis() >= 2 {
+            tracing::warn!(
+                "TIMING focus window={} app={:?} took={}ms activate={}ms element={}ms main={}ms cursor={}ms",
+                self.id,
+                self.application.name().unwrap_or_default(),
+                elapsed.as_millis(),
+                stage_activate.as_millis(),
+                stage_element.as_millis(),
+                stage_main.as_millis(),
+                t.elapsed().as_millis()
+            );
         }
 
         Ok(())

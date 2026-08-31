@@ -162,7 +162,7 @@ impl WindowManager {
             match event {
                 WindowManagerEvent::MoveStart(_, _, _)
                 | WindowManagerEvent::ResizeStart(_, _, _)
-                | WindowManagerEvent::Destroy(_, _) => crate::window::forget_position(id),
+                | WindowManagerEvent::Destroy(_, _) => crate::window::forget_window(id),
 
                 WindowManagerEvent::MoveEnd(notification, _, _)
                 | WindowManagerEvent::ResizeEnd(notification, _, _) => {
@@ -663,13 +663,14 @@ impl WindowManager {
                         s.take_match(window.id, &exe, &title)
                     });
 
-                    if let Some((target_m, target_ws)) = session_target {
+                    if let Some((target_m, target_ws, target_slot)) = session_target {
                         tracing::info!(
-                            "session: placing late window (id={}, exe={}) on monitor {} workspace {}",
+                            "session: placing late window (id={}, exe={}) on monitor {} workspace {} slot {}",
                             window.id,
                             window.exe().unwrap_or_default(),
                             target_m,
                             target_ws,
+                            target_slot,
                         );
 
                         if let Some(monitor) = self.monitors.elements_mut().get_mut(target_m) {
@@ -677,7 +678,18 @@ impl WindowManager {
                             if let Some(workspace) = monitor.workspaces_mut().get_mut(target_ws) {
                                 let mut container = crate::container::Container::default();
                                 container.windows_mut().push_back(window.clone());
-                                workspace.containers_mut().push_back(container);
+
+                                // Back into the slot it came from. Applications reopen in
+                                // their own order after a login, so a remembered slot can
+                                // still be past the end here; it fills in as the rest
+                                // arrive.
+                                let containers = workspace.containers_mut();
+
+                                if target_slot <= containers.len() {
+                                    containers.insert(target_slot, container);
+                                } else {
+                                    containers.push_back(container);
+                                }
                             }
 
                             let is_focused = target_m == focused_monitor_idx
