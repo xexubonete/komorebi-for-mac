@@ -355,8 +355,18 @@ impl MacosApi {
         // - Mac reboot: load() returns None (different boot uuid), so each
         //   window goes to its geometry monitor's focused workspace.
         let mut session = crate::session::load();
-        if session.is_some() {
-            tracing::info!("restoring window layout from previous session");
+        let was_focused = session.as_ref().map(crate::session::SessionState::focused);
+
+        // TRACE: whether the previous layout was found at all, and how big it was. If the
+        // windows come back piled into one workspace, this says whether there was nothing
+        // to restore from or whether there was and it did not match. Grep marker: STARTUP.
+        match &session {
+            Some(state) => tracing::warn!(
+                "STARTUP session found with {} windows, ids_are_current={}",
+                state.windows.len(),
+                state.ids_are_current
+            ),
+            None => tracing::warn!("STARTUP no session to restore from"),
         }
 
         for (geom_monitor_idx, windows) in monitor_window_map {
@@ -371,11 +381,29 @@ impl MacosApi {
 
                 // usize::MAX as the remembered slot means "no opinion": the window was
                 // not in the session, so it goes on the end like it always did.
+                let selected = session
+                    .as_ref()
+                    .is_some_and(|s| {
+                        s.windows.iter().any(|w| {
+                            w.selected
+                                && ((s.ids_are_current && w.window_id == window.id && w.exe == exe)
+                                    || (!title.is_empty() && w.exe == exe && w.title == title))
+                        })
+                    });
+
                 let (target_monitor, target_ws, target_slot) = session
                     .as_mut()
                     .and_then(|s| s.take_match(window.id, &exe, &title))
                     .filter(|(m, _, _)| wm.monitors.elements().get(*m).is_some())
                     .unwrap_or((geom_monitor_idx, fallback_ws, usize::MAX));
+
+                // One line per window. At debug: the summary above is what catches a
+                // session that failed to restore, and that one stays visible.
+                tracing::debug!(
+                    "STARTUP window {} ({exe:?}, {title:?}) -> monitor {target_monitor} workspace {target_ws} slot {target_slot} {}",
+                    window.id,
+                    if target_slot == usize::MAX { "(NOT in session)" } else { "(from session)" }
+                );
 
                 let mut container = Container::default();
                 container.windows_mut().push_back(window);
@@ -398,14 +426,35 @@ impl MacosApi {
                         // the rest arrive, and anything still out of range lands last.
                         let containers = workspace.containers_mut();
 
-                        if target_slot <= containers.len() {
+                        let landed = if target_slot <= containers.len() {
                             containers.insert(target_slot, container);
+                            target_slot
                         } else {
                             containers.push_back(container);
+                            containers.len() - 1
+                        };
+
+                        // The container the user had selected in this workspace, so
+                        // coming back lands on the window they left rather than on
+                        // whichever one happens to be first.
+                        if selected {
+                            workspace.containers.focus(landed);
                         }
                     }
                 }
             }
+        }
+
+        // Back to the workspace the user was on. Recovering from a screensaver or a
+        // sleep otherwise lands on the first workspace, which is rarely where they were
+        // -- and since komorebi is restarted for them rather than by them, it looks like
+        // the desk moved on its own.
+        if let Some((monitor_idx, workspace_idx)) = was_focused
+            && let Some(monitor) = wm.monitors.elements_mut().get_mut(monitor_idx)
+            && monitor.workspaces().get(workspace_idx).is_some()
+        {
+            monitor.workspaces.focus(workspace_idx);
+            wm.monitors.focus(monitor_idx);
         }
 
         // Keep unmatched session entries for late-arriving windows. After
