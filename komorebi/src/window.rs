@@ -982,8 +982,22 @@ impl Window {
             if current.right == rect.right && current.bottom == rect.bottom {
                 size_already_correct = true;
 
-                if current.left == rect.left && current.top == rect.top {
-                    tracing::debug!("SELFMOVE skip window={} (already in place)", self.id);
+                // Skipped only when komorebi is the one who put it there.
+                //
+                // A frame read back from the application is not evidence that the window
+                // is on screen. After waking from sleep the windows report exactly the
+                // coordinates they had before -- measured, all four of them -- while
+                // nothing is drawn at those coordinates, so komorebi decided there was
+                // nothing to do and the workspace stayed empty until the user navigated
+                // away and back.
+                //
+                // What komorebi remembers is different in kind: it means "I placed this
+                // window here, and nothing has moved it since". That record is dropped
+                // whenever anything else touches the window, and it does not exist at all
+                // before komorebi has placed the window once -- which is exactly the
+                // situation where the frame cannot be trusted.
+                if known.is_some() && current.left == rect.left && current.top == rect.top {
+                    tracing::debug!("SELFMOVE skip window={} (placed here by komorebi)", self.id);
                     return Ok(());
                 }
             }

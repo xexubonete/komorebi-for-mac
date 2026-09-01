@@ -110,11 +110,10 @@ pub fn hold_enhanced_ui_off(
     let state = known.entry(process_id).or_insert_with(|| {
         let was_on = get_enhanced_user_interface(application);
 
-        // Once per application, and worth seeing: this attribute was previously being
-        // read from the window element rather than the application's, where it does not
-        // exist. Whether it reads as on here says whether the animations komorebi has
-        // been trying to suppress were ever actually being suppressed.
-        tracing::warn!("ENHANCED_UI process={process_id} was_on={was_on}");
+        // Answered: it reads false on every application on this machine, so the
+        // animations komorebi disables here were never on to begin with. Kept at debug
+        // in case a future macOS turns it back on.
+        tracing::debug!("ENHANCED_UI process={process_id} was_on={was_on}");
 
         EnhancedUiState { was_on, holders: 0 }
     });
