@@ -216,6 +216,7 @@ impl WindowManager {
                     should_manage = false;
                 }
 
+
                 if !should_manage {
                     // At info: this is where events go to die, and a silent rejection is
                     // indistinguishable from an event that never came.
@@ -807,6 +808,28 @@ impl WindowManager {
                                 workspace.layer = WorkspaceLayer::Tiling;
                                 self.update_focused_workspace(true, false)?;
                             }
+                        }
+
+                        // The window the user just opened ends up focused.
+                        //
+                        // macOS focuses a new window by itself, but komorebi takes it
+                        // apart and places it, and the focus does not survive that. The
+                        // window appears on screen with nothing focused at all -- which
+                        // is what leaves Brave's translation bubble hanging over the
+                        // layout, because a bubble like that only dismisses once its own
+                        // window becomes key. Focusing the Brave window by hand made both
+                        // symptoms go at once, which is what pointed here.
+                        //
+                        // There was already a rule that focus belongs on the window the
+                        // user just opened, but it lived inside the code that rehouses
+                        // windows too narrow for their column -- so it only ran when the
+                        // new window happened to trigger a relocation. Most of the time
+                        // nothing needed rehousing and nothing claimed the focus.
+                        if self
+                            .focused_workspace_mut()
+                            .is_ok_and(|workspace| workspace.focus_container_by_window(window.id).is_ok())
+                        {
+                            window.focus(self.mouse_follows_focus)?;
                         }
 
                         // TODO: not sure if this is needed on macOS

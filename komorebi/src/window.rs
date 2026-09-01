@@ -131,6 +131,11 @@ lazy_static::lazy_static! {
         parking_lot::Mutex::new(HashMap::new());
 }
 
+/// Windows already reported by the MANAGING trace, so it speaks once per window rather
+/// than on every event that window produces.
+static MANAGE_LOGGED: LazyLock<parking_lot::Mutex<std::collections::HashSet<u32>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
+
 /// Window titles, asked for once and remembered.
 ///
 /// Saving the session names every window by application and title so the layout can be
@@ -1496,6 +1501,38 @@ impl Window {
         event: Option<WindowManagerEvent>,
         debug: &mut RuleDebug,
     ) -> eyre::Result<bool> {
+        let decision = self.should_manage_inner(event, debug);
+
+        // TRACE: what komorebi decided to tile, and how the window described itself when
+        // it decided. Things that are not really windows keep finding their way into the
+        // grid -- the Notification Center, Raycast, the login window, Brave's translation
+        // bubble -- and every time, all that was needed to exclude them was knowing what
+        // they call themselves.
+        //
+        // Reported here rather than at a call site, which is what made the last one so
+        // hard to see: the trace sat on one of the paths that manages a window, the
+        // bubble arrived by another, and the log said nothing was managed while a quarter
+        // of the workspace was given to it. Every path goes through this function.
+        // Grep marker: MANAGING.
+        if matches!(decision, Ok(true)) && MANAGE_LOGGED.lock().insert(self.id) {
+            tracing::warn!(
+                "MANAGING window={} app={:?} role={:?} subrole={:?} title={:?}",
+                self.id,
+                self.application.name().unwrap_or_default(),
+                self.role().unwrap_or_default(),
+                self.subrole().unwrap_or_default(),
+                self.title().unwrap_or_default()
+            );
+        }
+
+        decision
+    }
+
+    fn should_manage_inner(
+        &self,
+        event: Option<WindowManagerEvent>,
+        debug: &mut RuleDebug,
+    ) -> eyre::Result<bool> {
         if !self.is_valid() {
             return Ok(false);
         }
@@ -1526,9 +1563,20 @@ impl Window {
         // like Spotlight, and they belong outside the layout.
         //
         // manage_rules still wins, for anything that genuinely wants to be tiled.
+        // AXUnknown belongs here too, and for the same reason.
+        //
+        // A window that declines to say what kind of window it is, is not an application
+        // window. Two turned up: the macOS login window, which was being tiled into the
+        // grid while the screen was locked, and Brave's "translate this page?" bubble,
+        // which took a quarter of the workspace and showed the desktop through the rest
+        // of it -- because there is only a small popup there to draw.
+        //
+        // The distinction is not cosmetic: these are transient things the system or the
+        // application puts on top, and giving them a cell means the layout is built
+        // around something that is about to disappear.
         if self
             .subrole()
-            .is_some_and(|subrole| subrole == "AXSystemDialog")
+            .is_some_and(|subrole| subrole == "AXSystemDialog" || subrole == "AXUnknown")
             && !self.matches_manage_rules()
         {
             return Ok(false);
