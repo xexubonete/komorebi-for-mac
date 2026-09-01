@@ -15,6 +15,8 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct SessionState {
@@ -26,6 +28,13 @@ pub struct SessionState {
     #[serde(default)]
     pub boot_uuid: String,
     pub windows: Vec<SessionWindow>,
+    /// Which workspace was in front, and on which monitor. Without it every recovery
+    /// landed on the first workspace regardless of where the user had been -- which after
+    /// a screensaver means coming back to a different desk than the one you left.
+    #[serde(default)]
+    pub focused_monitor: usize,
+    #[serde(default)]
+    pub focused_workspace: usize,
     /// Whether the window ids in here still refer to the windows they were
     /// written for. False once the Mac has rebooted: the placements are still
     /// worth having, but only what can be matched by name and title.
@@ -45,6 +54,10 @@ pub struct SessionWindow {
     pub title: String,
     pub monitor: usize,
     pub workspace: usize,
+    /// Whether this window's container was the selected one in its workspace. Restoring
+    /// the workspace without it puts the focus on whatever happens to be first.
+    #[serde(default)]
+    pub selected: bool,
     /// Which slot of that workspace the window occupied. Without it the workspace
     /// came back right but the grid cells were dealt out in whatever order macOS
     /// happened to enumerate the windows in -- which is by depth, so it changed
@@ -60,6 +73,11 @@ impl SessionState {
     ///   2. app + title      → best-effort, the logout/login case (new ids).
     /// Requiring the app to match avoids misplacing a window if a new id
     /// collides by chance with an old one from a different app.
+    /// Where the user was when this was written.
+    pub fn focused(&self) -> (usize, usize) {
+        (self.focused_monitor, self.focused_workspace)
+    }
+
     pub fn take_match(
         &mut self,
         window_id: u32,
@@ -124,6 +142,33 @@ fn boot_uuid() -> Option<String> {
 // Last written contents, cached to avoid rewriting the file when nothing changed.
 static LAST_WRITTEN: Mutex<Option<String>> = Mutex::new(None);
 
+/// Whether this komorebi has seen the machine go to sleep.
+///
+/// A latch, not a flag: it is never cleared.
+///
+/// Closing the lid tears every window out of komorebi's model -- measured, it went from
+/// seven windows to none in under a second -- and the session is written after every
+/// command, so that emptiness was faithfully saved over the layout it was meant to
+/// protect. On waking, there was nothing left to restore from and the windows stayed
+/// wherever they were until the user went looking for them.
+///
+/// Clearing it on waking was not enough, and the overnight logs say why: waking does not
+/// give this process its windows back. The model is still empty when the wake notification
+/// arrives, the door reopens, and the next event writes that emptiness to disk -- moments
+/// before the restart that was going to read it. A session of seven windows came back as
+/// one, every night.
+///
+/// A komorebi that has been through a sleep does not recover; it gets replaced by a fresh
+/// one, and that fresh one saves normally. So this process has nothing useful left to say
+/// about the layout, and the last thing it said before sleeping is the best there is.
+static SLEPT: AtomicBool = AtomicBool::new(false);
+
+/// The machine is going to sleep. From here on this process leaves the file alone.
+pub fn note_system_slept() {
+    tracing::info!("system going to sleep: session file is now read-only for this process");
+    SLEPT.store(true, Ordering::SeqCst);
+}
+
 /// Reads the saved session state, if any and if it belongs to the current boot.
 pub fn load() -> Option<SessionState> {
     let contents = std::fs::read_to_string(session_path()).ok()?;
@@ -148,7 +193,21 @@ pub fn load() -> Option<SessionState> {
 
 /// Builds the current state and writes it to disk (only if it changed).
 pub fn save(wm: &WindowManager) {
+    if SLEPT.load(Ordering::SeqCst) {
+        return;
+    }
+
     let state = build(wm);
+
+    // Nothing to remember is never worth remembering. An empty session cannot restore
+    // anything, so writing one can only destroy what was there -- and komorebi's model
+    // goes briefly empty for reasons that have nothing to do with the user closing
+    // windows. If they really did close them all, the next start finds entries that match
+    // nothing, which is harmless.
+    if state.windows.is_empty() {
+        return;
+    }
+
 
     let json = match serde_json::to_string_pretty(&state) {
         Ok(json) => json,
@@ -178,9 +237,18 @@ pub fn save(wm: &WindowManager) {
 fn build(wm: &WindowManager) -> SessionState {
     let mut windows = Vec::new();
     let boot_uuid = boot_uuid().unwrap_or_default();
+    let focused_monitor = wm.monitors.focused_idx();
+    let focused_workspace = wm
+        .monitors
+        .elements()
+        .get(focused_monitor)
+        .map(|monitor| monitor.focused_workspace_idx())
+        .unwrap_or_default();
 
     for (m_idx, monitor) in wm.monitors.elements().iter().enumerate() {
         for (w_idx, workspace) in monitor.workspaces().iter().enumerate() {
+            let selected_idx = workspace.containers.focused_idx();
+
             for (c_idx, container) in workspace.containers().iter().enumerate() {
                 for window in container.windows() {
                     windows.push(SessionWindow {
@@ -190,6 +258,7 @@ fn build(wm: &WindowManager) -> SessionState {
                         monitor: m_idx,
                         workspace: w_idx,
                         index: c_idx,
+                        selected: c_idx == selected_idx,
                     });
                 }
             }
@@ -204,6 +273,7 @@ fn build(wm: &WindowManager) -> SessionState {
                     // Floating windows are not in the grid, so they have no slot
                     // to come back to.
                     index: 0,
+                    selected: false,
                 });
             }
         }
@@ -212,6 +282,8 @@ fn build(wm: &WindowManager) -> SessionState {
     SessionState {
         boot_uuid,
         windows,
+        focused_monitor,
+        focused_workspace,
         ids_are_current: true,
     }
 }

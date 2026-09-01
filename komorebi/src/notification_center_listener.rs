@@ -32,6 +32,16 @@ define_class! {
     impl NotificationCenterListenerNsObject {
         #[unsafe(method(handleNotification:))]
         fn handle_notification(&self, notif: &NSNotification) {
+            // Sleep and wake carry no application, so they are answered here rather than
+            // being turned into a window event that would have nothing to point at.
+            match notif.name().to_string().as_str() {
+                "NSWorkspaceWillSleepNotification" | "NSWorkspaceScreensDidSleepNotification" => {
+                    crate::session::note_system_slept();
+                    return;
+                }
+                _ => {}
+            }
+
             let mut process_id = None;
             let mut window_id = None;
             let mut valid_keys = vec![];
@@ -215,6 +225,12 @@ impl NotificationCenterListener {
                 AppKitWorkspaceNotification::NSWorkspaceActiveSpaceDidChangeNotification,
                 // A notification that the workspace posts when the device wakes from sleep.
                 AppKitWorkspaceNotification::NSWorkspaceDidWakeNotification,
+                // Sleeping tears every window out of komorebi's model, so it has to know
+                // when not to trust -- or record -- what it can see. See
+                // session::set_system_asleep.
+                AppKitWorkspaceNotification::NSWorkspaceWillSleepNotification,
+                AppKitWorkspaceNotification::NSWorkspaceScreensDidSleepNotification,
+                AppKitWorkspaceNotification::NSWorkspaceScreensDidWakeNotification,
             ] {
                 let notification_name: Retained<NSNotificationName> = notification.into();
 
