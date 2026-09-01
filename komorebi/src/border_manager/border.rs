@@ -71,6 +71,23 @@ unsafe extern "C-unwind" fn border_observer_callback(
                 ns_rect.size.width += offset * 2.0;
                 ns_rect.size.height += offset * 2.0;
 
+                // TRACE: where the border is being drawn, against the window it is
+                // meant to be drawn around. A border left over a window that has since
+                // moved looks exactly like a border drawn wrong, and only these two
+                // numbers side by side tell them apart. Grep marker: BORDERRECT.
+                tracing::warn!(
+                    "BORDERRECT window={} target={},{} {}x{} border={},{} {}x{}",
+                    border.tracking_window_id,
+                    rect.origin.x,
+                    rect.origin.y,
+                    rect.size.width,
+                    rect.size.height,
+                    ns_rect.origin.x,
+                    ns_rect.origin.y,
+                    ns_rect.size.width,
+                    ns_rect.size.height
+                );
+
                 border.update();
                 border
                     .ns_window

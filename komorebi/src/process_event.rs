@@ -170,6 +170,15 @@ impl WindowManager {
 
                     if user_moved_it || !crate::window::absorb_self_move_echo(id) {
                         crate::window::forget_position(id);
+
+                        // A border is a separate window drawn around this one, and it
+                        // only moves when the border thread is told to look again. Told
+                        // for komorebi's own moves, because those end a command -- but a
+                        // window that resizes itself ends nothing, so the border stayed
+                        // where the window used to be, and nothing ever came to correct
+                        // it. It is a border round nothing until the user happens to
+                        // trigger an update.
+                        border_manager::send_notification(None, Some(id), false);
                     }
                 }
 
