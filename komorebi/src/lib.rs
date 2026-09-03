@@ -366,18 +366,36 @@ pub enum LibraryError {
     Eyre(#[from] eyre::Error),
 }
 
+/// Where a window goes while its workspace is not on screen.
+///
+/// Off to the side, not down as well. Mission Control lays out every window the system
+/// knows about, parked ones included, and scales the result to fit -- so how far komorebi
+/// throws them decides how small everything looks in there.
+///
+/// Pushed left *and* down, the area to fit was 3835x3106 against a 2560x1600 screen, and
+/// Mission Control drew everything at 52%. Pushed only left, the parked windows stay
+/// within the screen's own height and the area is 3835x1570: the vertical stops
+/// mattering, and the scale goes back to 67%.
+///
+/// This is also why it seemed to get worse on its own. Nothing here changed -- the
+/// windows did. With four to a workspace they park at half height and reach 2320; with
+/// one or two they are full height and reach 3106. The parking was always this wide, it
+/// just did not use to be this tall.
+///
+/// The one pixel left on screen is what keeps the window attached to a display, so macOS
+/// does not decide to bring it back. It used to be a single pixel in the corner; aligned
+/// vertically it becomes a one-pixel column down the edge.
 pub fn hidden_frame_bottom_left(screen_frame: CGRect, window_size: CGSize) -> CGRect {
     let visible_sliver: f64 = 1.0;
     let origin_x = screen_frame.origin.x - (window_size.width - visible_sliver);
-    let origin_y = screen_frame.origin.y + screen_frame.size.height - visible_sliver;
 
-    CGRect::new(CGPoint::new(origin_x, origin_y), window_size)
+    CGRect::new(CGPoint::new(origin_x, screen_frame.origin.y), window_size)
 }
 
+/// The mirror of [`hidden_frame_bottom_left`], and off to the side for the same reason.
 pub fn hidden_frame_bottom_right(screen_frame: CGRect, window_size: CGSize) -> CGRect {
     let visible_sliver: f64 = 1.0;
     let origin_x = screen_frame.origin.x + screen_frame.size.width - visible_sliver;
-    let origin_y = screen_frame.origin.y + screen_frame.size.height - visible_sliver;
 
-    CGRect::new(CGPoint::new(origin_x, origin_y), window_size)
+    CGRect::new(CGPoint::new(origin_x, screen_frame.origin.y), window_size)
 }
