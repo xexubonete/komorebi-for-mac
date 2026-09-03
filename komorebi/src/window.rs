@@ -131,6 +131,19 @@ lazy_static::lazy_static! {
         parking_lot::Mutex::new(HashMap::new());
 }
 
+/// Which application owns a window, asked of the window server.
+///
+/// For windows komorebi knows nothing about -- which is the only time it needs asking.
+pub fn window_owner_name(window_id: u32) -> Option<String> {
+    let list = crate::core_graphics::CoreGraphicsApi::window_list_info()?;
+
+    crate::cf_array_as::<objc2_core_foundation::CFDictionary>(&list)
+        .into_iter()
+        .map(WindowInfo::new)
+        .find(|info| info.window_id == Some(window_id))
+        .map(|info| info.owner_name)
+}
+
 /// Windows already reported by the MANAGING trace, so it speaks once per window rather
 /// than on every event that window produces.
 static MANAGE_LOGGED: LazyLock<parking_lot::Mutex<std::collections::HashSet<u32>>> =

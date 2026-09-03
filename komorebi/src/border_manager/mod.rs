@@ -525,10 +525,29 @@ fn handle_notifications(
             .is_some_and(|since| since.elapsed() >= FOREGROUND_LOST_GRACE);
 
         // DIAGNOSTIC: which window the border manager believes is in front, and whether
-        // it counts as one of ours. Grep marker: FOREGROUND.
+        // it counts as one of ours.
+        //
+        // At warn, because this is what makes the borders vanish while the keyboard focus
+        // stays put: a window komorebi does not manage coming to the front hides every
+        // border on purpose, and if the thing that came to the front was transient, the
+        // borders stay hidden until the next real focus change. That is exactly what
+        // "sometimes the borders just go" looks like, and only the name of the window
+        // that did it says whether hiding them was the right call.
+        //
+        // The name comes from the window server rather than komorebi's own records: the
+        // whole point is that this window is not in them. Only looked up when the
+        // foreground is unmanaged, which is rare. Grep marker: FOREGROUND.
         if foreground_is_managed != previous_foreground_is_managed {
-            tracing::info!(
-                "FOREGROUND changed: window={foreground_window} managed={foreground_is_managed}"
+            let culprit = if foreground_is_managed {
+                String::new()
+            } else {
+                crate::window::window_owner_name(foreground_window)
+                    .map(|owner| format!(" owner={owner:?}"))
+                    .unwrap_or_else(|| String::from(" owner=<unknown>"))
+            };
+
+            tracing::warn!(
+                "FOREGROUND changed: window={foreground_window} managed={foreground_is_managed}{culprit}"
             );
         }
 
