@@ -1350,6 +1350,7 @@ impl StaticConfig {
                 }
 
                 monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                monitor.trim_workspace_count(monitor_config.workspaces.len());
 
                 // Not unconditionally: forty lines up this monitor was given the global
                 // offset precisely so the layout paths that only see the monitor would
@@ -1538,6 +1539,7 @@ impl StaticConfig {
                 }
 
                 monitor.ensure_workspace_count(monitor_config.workspaces.len());
+                monitor.trim_workspace_count(monitor_config.workspaces.len());
                 if monitor.work_area_offset.is_none() {
                     monitor.work_area_offset = monitor_config.work_area_offset;
                 }

@@ -658,10 +658,79 @@ impl Monitor {
         self.workspaces_mut().drain(..).collect()
     }
 
+    /// Make sure this monitor has at least `ensure_count` workspaces, creating any that
+    /// are missing.
+    ///
+    /// A workspace created here inherits the layout of the last one that already exists,
+    /// rather than the code's own default of BSP.
+    ///
+    /// The default was doing real damage. A configuration that defines five Grid
+    /// workspaces says plainly what the user wants their windows to look like, but the
+    /// sixth and beyond -- created on demand, by a session restore or by navigating to a
+    /// number that has never been used -- arrived as BSP. BSP halves the space again with
+    /// every window, so four windows on a 3008-point display came out 1500, 1500, 748 and
+    /// 748 wide instead of four even columns. Applications that will not shrink below a
+    /// width of their own (WhatsApp 970, Música 980) then genuinely did not fit, the
+    /// relocation logic moved them off to the next workspace, and since this happened on
+    /// the last workspace there was nowhere left to send them. Three separate complaints
+    /// -- "it says it does not fit when it plainly does", windows piling up on workspace
+    /// 9, and a window that seemed to vanish -- were all this one line.
     pub fn ensure_workspace_count(&mut self, ensure_count: usize) {
-        if self.workspaces().len() < ensure_count {
-            self.workspaces_mut()
-                .resize(ensure_count, Workspace::default());
+        if self.workspaces().len() >= ensure_count {
+            return;
+        }
+
+        let mut template = Workspace::default();
+
+        if let Some(last) = self.workspaces().back() {
+            template.layout = last.layout.clone();
+            template.layout_options = last.layout_options;
+            template.layout_flip = last.layout_flip;
+        }
+
+        self.workspaces_mut().resize(ensure_count, template);
+    }
+
+    /// Reduce this monitor to `count` workspaces, keeping every window.
+    ///
+    /// The counterpart to [`Self::ensure_workspace_count`], which only ever grows. Without
+    /// it, a workspace created on demand -- by a session restore naming a number the
+    /// configuration does not define -- outlived the configuration that was supposed to
+    /// govern it, and kept reappearing on every start.
+    ///
+    /// Windows found beyond the limit are not discarded: they move to the last workspace
+    /// that survives. Dropping them would lose them for good, and a workspace the user
+    /// can no longer reach is exactly how they went missing in the first place.
+    pub fn trim_workspace_count(&mut self, count: usize) {
+        if count == 0 || self.workspaces().len() <= count {
+            return;
+        }
+
+        let mut rescued = Vec::new();
+
+        while self.workspaces().len() > count {
+            if let Some(mut workspace) = self.workspaces_mut().pop_back() {
+                rescued.extend(workspace.containers_mut().drain(..));
+            }
+        }
+
+        if !rescued.is_empty()
+            && let Some(last) = self.workspaces_mut().get_mut(count - 1)
+        {
+            tracing::warn!(
+                "trimming to {count} workspaces; moving {} container(s) to workspace {count}",
+                rescued.len()
+            );
+
+            for container in rescued {
+                last.containers_mut().push_back(container);
+            }
+        }
+
+        let focused = self.focused_workspace_idx();
+
+        if focused >= count {
+            self.workspaces.focus(count - 1);
         }
     }
 
