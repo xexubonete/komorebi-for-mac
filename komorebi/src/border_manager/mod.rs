@@ -9,6 +9,7 @@ pub use crate::border_manager::ns_window::FLASH_DURATION_MS;
 pub use crate::border_manager::ns_window::FLASH_FACTOR_X10;
 pub use crate::border_manager::ns_window::FlashStyle;
 pub use crate::border_manager::ns_window::set_flash_easing;
+use crate::core::Rect;
 use crate::core::WindowKind;
 use crate::macos_api::MacosApi;
 use crate::ring::Ring;
@@ -379,7 +380,21 @@ fn handle_notifications(
     let receiver = event_rx();
     event_tx().send(Notification::Update(None, None, false))?;
 
-    let mut previous_snapshot = Ring::default();
+    // What the borders actually depend on, as plain numbers.
+    //
+    // This used to hold a clone of every monitor and compare the whole tree on each pass.
+    // That comparison walks every window, and comparing two windows compares their
+    // accessibility elements -- a call into the process that owns each one. The same
+    // comparison was measured at 52ms in the command path earlier and taken out of it for
+    // exactly this reason; here it ran on every border notification instead.
+    //
+    // The cost showed up as the symptom: the border thread could not keep up, its inbox
+    // filled and notifications were dropped by the dozen, and a dropped update leaves a
+    // border drawn around where its window used to be.
+    //
+    // A border cares about three things: which window is focused, and where each window
+    // sits. None of that needs the applications to be asked anything.
+    let mut previous_snapshot: Vec<(usize, usize, Vec<(u32, Rect)>)> = Vec::new();
     let mut previous_pending_move_op = None;
     let mut previous_is_paused = false;
     let mut previous_notification: Option<Notification> = None;
@@ -557,6 +572,40 @@ fn handle_notifications(
         // No drop needed: the window manager, on the rare path that still consults it, is
         // released as soon as the values above have been read out of it.
 
+        // The fingerprint for this pass, built from the snapshot already in hand.
+        let snapshot: Vec<(usize, usize, Vec<(u32, Rect)>)> = monitors
+            .elements()
+            .iter()
+            .map(|monitor| {
+                let workspace_idx = monitor.focused_workspace_idx();
+
+                let windows = monitor
+                    .workspaces()
+                    .get(workspace_idx)
+                    .map(|workspace| {
+                        workspace
+                            .containers()
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, container)| {
+                                let window = container.focused_window()?;
+                                let rect = workspace.latest_layout.get(idx).copied()?;
+                                Some((window.id, rect))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let focused_container = monitor
+                    .workspaces()
+                    .get(workspace_idx)
+                    .map(|workspace| workspace.focused_container_idx())
+                    .unwrap_or_default();
+
+                (workspace_idx, focused_container, windows)
+            })
+            .collect();
+
         let should_process_notification = match notification {
             // Woken by the deadline rather than by a notification. Nothing has been
             // reported, so the only thing worth acting on is the foreground having
@@ -565,7 +614,7 @@ fn handle_notifications(
             Some(Notification::Update(_, notification_window_id, reaper)) => {
                 let mut should_process_notification = true;
 
-                if monitors == previous_snapshot
+                if snapshot == previous_snapshot
                     // handle the window dragging edge case
                     && pending_move_op == previous_pending_move_op
                 {
@@ -906,7 +955,7 @@ fn handle_notifications(
             }
         }
 
-        previous_snapshot = monitors;
+        previous_snapshot = snapshot;
         previous_pending_move_op = pending_move_op;
         previous_is_paused = is_paused;
         // Only remember real notifications: a deadline waking us up is not something to
