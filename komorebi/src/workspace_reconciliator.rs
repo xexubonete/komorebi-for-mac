@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -58,11 +60,38 @@ pub static USER_WORKSPACE_GENERATION: AtomicU64 = AtomicU64::new(0);
 ///   where it lives. Measured: exactly this, with the reconciliation landing on the
 ///   workspace the user had passed through.
 ///
-/// Hence a short history rather than one slot. Eight covers far more rapid navigation
-/// than any burst outlives, and the oldest entry falls off the end.
-static FOCUS_WE_CAUSED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// Hence a short history rather than one slot. But a record that is never removed is a
+/// bug of its own: focusing an already-open application from a launcher, when its window
+/// lives on another workspace, is exactly the same report as a late echo, and a record
+/// left lying around from minutes ago swallows it. The workspace never follows.
+///
+/// Two things retire a record, and between them they leave nothing stale behind:
+///
+/// * **A report for a newer record.** macOS delivers these in the order the focuses that
+///   caused them happened, so a report for a later focus proves every earlier burst has
+///   already been delivered in full. Every record older than the one that just matched is
+///   dropped.
+///
+/// * **Age**, for the newest record, which nothing newer will ever retire. A burst is
+///   delivered within a few hundred milliseconds of the focus that caused it -- measured
+///   at roughly 400ms for the slowest report -- so a record still waiting seconds later is
+///   waiting for something that is not coming.
+///
+/// This is not a period during which komorebi ignores what happens; it is how long one
+/// record about one window stays believable, which is bounded by how long macOS takes to
+/// deliver reports it has already queued.
+static FOCUS_WE_CAUSED: Mutex<Vec<OwnFocus>> = Mutex::new(Vec::new());
 
 const FOCUS_HISTORY: usize = 8;
+
+/// How long a record can still be waiting for its burst. Bursts measured at ~400ms; this
+/// is generous enough that shortening it is never the answer to a missed echo.
+const BURST_LIFETIME: Duration = Duration::from_secs(2);
+
+struct OwnFocus {
+    window_id: u32,
+    at: Instant,
+}
 
 /// Record that komorebi is about to focus this window itself.
 pub fn note_focus_we_caused(window_id: u32) {
@@ -70,12 +99,15 @@ pub fn note_focus_we_caused(window_id: u32) {
 
     // Already the most recent? Then re-recording it would push out an older entry that is
     // still waiting for its reports to arrive.
-    if ours.last() == Some(&window_id) {
+    if ours.last().is_some_and(|last| last.window_id == window_id) {
         return;
     }
 
-    ours.retain(|id| *id != window_id);
-    ours.push(window_id);
+    ours.retain(|focus| focus.window_id != window_id);
+    ours.push(OwnFocus {
+        window_id,
+        at: Instant::now(),
+    });
 
     if ours.len() > FOCUS_HISTORY {
         ours.remove(0);
@@ -84,9 +116,27 @@ pub fn note_focus_we_caused(window_id: u32) {
 
 /// Whether this focus change is one komorebi caused.
 pub fn focus_was_ours(window_id: u32) -> bool {
-    FOCUS_WE_CAUSED.lock().contains(&window_id)
-}
+    let mut ours = FOCUS_WE_CAUSED.lock();
 
+    let Some(idx) = ours
+        .iter()
+        .position(|focus| focus.window_id == window_id)
+    else {
+        return false;
+    };
+
+    // Too old to still be waiting: this is the user reaching for the window, not macOS
+    // catching up. Retire it, and everything older, so it cannot swallow the next one.
+    if ours[idx].at.elapsed() > BURST_LIFETIME {
+        ours.drain(..=idx);
+        return false;
+    }
+
+    // Not consumed -- the rest of this burst is still to come -- but everything focused
+    // before it has demonstrably finished reporting.
+    ours.drain(..idx);
+    true
+}
 
 /// Record that the user navigated to a workspace directly.
 pub fn note_user_changed_workspace() {
