@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -163,9 +164,26 @@ static LAST_WRITTEN: Mutex<Option<String>> = Mutex::new(None);
 /// about the layout, and the last thing it said before sleeping is the best there is.
 static SLEPT: AtomicBool = AtomicBool::new(false);
 
+/// How many windows the last saved session described.
+///
+/// Because the latch has to lift again. Set for the rest of the process's life, it meant
+/// that a screensaver lasting three seconds -- one the user dismisses without even typing
+/// a password -- froze the layout on disk until the next restart, and everything they did
+/// afterwards was lost the next time komorebi started. The lock is a warning that the
+/// model may be about to fall apart, not proof that it did.
+///
+/// So the count decides. While komorebi knows about fewer windows than the file already
+/// records, it has lost track and must not overwrite it. The moment it knows about as
+/// many as before, it is whole again and saving resumes on its own -- no restart, and
+/// nothing to reset by hand.
+static LAST_SAVED_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// The machine is going to sleep. From here on this process leaves the file alone.
 pub fn note_system_slept() {
-    tracing::info!("system going to sleep: session file is now read-only for this process");
+    // At warn: this is the moment that decides whether the layout survives the next
+    // sleep or lock, and its absence is the whole failure. Silence here means the
+    // notification never arrived, which is a different problem from arriving too late.
+    tracing::warn!("SLEPT: session file is now read-only for this process");
     SLEPT.store(true, Ordering::SeqCst);
 }
 
@@ -193,11 +211,20 @@ pub fn load() -> Option<SessionState> {
 
 /// Builds the current state and writes it to disk (only if it changed).
 pub fn save(wm: &WindowManager) {
-    if SLEPT.load(Ordering::SeqCst) {
-        return;
-    }
-
     let state = build(wm);
+
+    if SLEPT.load(Ordering::SeqCst) {
+        if state.windows.len() < LAST_SAVED_COUNT.load(Ordering::SeqCst) {
+            return;
+        }
+
+        tracing::warn!(
+            "SLEPT lifted: {} windows known again, saving the session as usual",
+            state.windows.len()
+        );
+
+        SLEPT.store(false, Ordering::SeqCst);
+    }
 
     // Nothing to remember is never worth remembering. An empty session cannot restore
     // anything, so writing one can only destroy what was there -- and komorebi's model
@@ -232,6 +259,7 @@ pub fn save(wm: &WindowManager) {
     }
 
     *last = Some(json);
+    LAST_SAVED_COUNT.store(state.windows.len(), Ordering::SeqCst);
 }
 
 fn build(wm: &WindowManager) -> SessionState {

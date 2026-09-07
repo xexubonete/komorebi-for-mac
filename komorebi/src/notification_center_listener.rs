@@ -35,7 +35,14 @@ define_class! {
             // Sleep and wake carry no application, so they are answered here rather than
             // being turned into a window event that would have nothing to point at.
             match notif.name().to_string().as_str() {
-                "NSWorkspaceWillSleepNotification" | "NSWorkspaceScreensDidSleepNotification" => {
+                // All four mean the same thing to komorebi: from here on it can no
+                // longer see the windows properly, so it must stop writing down where
+                // they are. What is already on disk describes the machine as it was
+                // while the user could still see it, which is what is wanted on return.
+                "NSWorkspaceWillSleepNotification"
+                | "NSWorkspaceScreensDidSleepNotification"
+                | "com.apple.screenIsLocked"
+                | "com.apple.screensaver.didstart" => {
                     crate::session::note_system_slept();
                     return;
                 }
@@ -239,6 +246,26 @@ impl NotificationCenterListener {
                     &observer.inner,
                     sel!(handleNotification:),
                     Some(&notification_name),
+                    None,
+                );
+            }
+
+            // Locking the screen is not the workspace's business, so it is not announced
+            // here -- it goes out on the system-wide notification centre instead, and
+            // komorebi was not listening to that one at all.
+            //
+            // It has to know. Locking tears every window out of its model exactly like
+            // sleeping does, and the session file is rewritten after every command, so
+            // that emptiness was saved over the layout it was meant to protect. Sleeping
+            // was already handled; the screensaver was not, and it is the one that
+            // happens several times a day.
+            let distributed = NSDistributedNotificationCenter::defaultCenter();
+
+            for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
+                distributed.addObserver_selector_name_object(
+                    &observer.inner,
+                    sel!(handleNotification:),
+                    Some(&NSString::from_str(name)),
                     None,
                 );
             }
