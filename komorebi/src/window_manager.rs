@@ -1067,6 +1067,29 @@ impl WindowManager {
                 },
             };
 
+            // TRACE: the decision itself, with the numbers behind it. Reported as
+            // "no cabe" for a window that plainly fits, so what matters is which width
+            // it was compared against and where that width came from. Grep marker: FIT.
+            {
+                let workspace = self.focused_workspace()?;
+                tracing::warn!(
+                    "FIT workspace={} containers={} layout={:?} pinned={:?} candidate={:?}",
+                    self.focused_monitor()
+                        .map(|m| m.focused_workspace_idx() + 1)
+                        .unwrap_or(0),
+                    workspace.containers().len(),
+                    workspace
+                        .latest_layout
+                        .iter()
+                        .map(|r| r.right)
+                        .collect::<Vec<_>>(),
+                    pinned,
+                    candidate
+                        .as_ref()
+                        .map(|(idx, app, min)| (*idx, app.clone(), *min))
+                );
+            }
+
             let Some((container_idx, application, minimum)) = candidate else {
                 break;
             };
@@ -1084,7 +1107,7 @@ impl WindowManager {
                 .get(container_idx)
                 .is_some_and(|container| container.contains_window(just_opened));
 
-            tracing::info!(
+            tracing::warn!(
                 "moving {application} to workspace {} (needs {minimum} points of width)",
                 target_idx + 1
             );
@@ -1182,8 +1205,13 @@ impl WindowManager {
                     return Ok(false);
                 };
 
-                return Ok(crate::min_size::get(&application)
-                    .is_some_and(|minimum| minimum > assigned.right));
+                let too_narrow = crate::min_size::get(&application)
+                    .is_some_and(|minimum| minimum > assigned.right);
+
+                let too_short = crate::min_size::get_height(&application)
+                    .is_some_and(|minimum| minimum > assigned.bottom);
+
+                return Ok(too_narrow || too_short);
             }
         }
 
@@ -1283,13 +1311,27 @@ impl WindowManager {
                     continue;
                 };
 
-                let Some(minimum) = crate::min_size::get(&application) else {
-                    continue;
-                };
+                // Width and height, not width alone.
+                //
+                // Minimum height is learned exactly like minimum width, but it was only
+                // ever used when asking the application for a size: nothing checked
+                // whether the cell it had been given was tall enough. With nine windows
+                // on a 3008x1662 display the cells come out at 998x550, and WhatsApp --
+                // 970 wide, 600 tall -- passed on width, failed on height, stayed at 600
+                // and spilled over the window below with nothing noticing.
+                let too_narrow = crate::min_size::get(&application)
+                    .is_some_and(|minimum| minimum > assigned.right);
 
-                if minimum <= assigned.right {
+                let too_short = crate::min_size::get_height(&application)
+                    .is_some_and(|minimum| minimum > assigned.bottom);
+
+                if !too_narrow && !too_short {
                     continue;
                 }
+
+                // Ranked by minimum width because that is what decides the destination:
+                // a window that fails on height still needs a column it fits in.
+                let minimum = crate::min_size::get(&application).unwrap_or(0);
 
                 if worst.as_ref().is_none_or(|(_, _, m)| minimum > *m) {
                     worst = Some((container_idx, application, minimum));
@@ -1309,6 +1351,26 @@ impl WindowManager {
     /// 2560-wide display the columns drop below 980 at five windows, on a 4K one not
     /// until ten.
     fn workspace_with_room_for(&self, minimum: i32) -> eyre::Result<Option<usize>> {
+        // The height needed is taken from the application being moved and carried
+        // alongside the width: sending it somewhere with wide columns but short rows
+        // would only repeat the problem on another workspace.
+        let wanted_height = self
+            .focused_workspace()
+            .ok()
+            .and_then(|workspace| {
+                workspace
+                    .containers()
+                    .iter()
+                    .flat_map(|container| container.windows().iter())
+                    .filter_map(|window| window.application.name())
+                    .filter(|application| {
+                        crate::min_size::get(application).unwrap_or(0) == minimum
+                    })
+                    .filter_map(|application| crate::min_size::get_height(&application))
+                    .max()
+            })
+            .unwrap_or(0);
+
         let monitor = self.focused_monitor().ok_or_eyre("there is no monitor")?;
         let current_idx = monitor.focused_workspace_idx();
         let workspaces = monitor.workspaces();
@@ -1324,7 +1386,10 @@ impl WindowManager {
             // empty was never what mattered: a workspace holding two windows can have
             // room to spare, and skipping it to reach an empty one further along just
             // scatters windows for no reason.
-            if self.column_width_with_one_more(idx, workspace.containers().len() + 1) >= minimum {
+            let (width, height) =
+                self.cell_size_with_one_more(idx, workspace.containers().len() + 1);
+
+            if width >= minimum && height >= wanted_height {
                 return Ok(Some(idx));
             }
         }
@@ -1332,18 +1397,19 @@ impl WindowManager {
         Ok(None)
     }
 
-    /// Narrowest column a workspace would end up with if it held `containers` windows.
-    fn column_width_with_one_more(&self, workspace_idx: usize, containers: usize) -> i32 {
+    /// Smallest cell -- narrowest column and shortest row -- a workspace would end up
+    /// with if it held `containers` windows.
+    fn cell_size_with_one_more(&self, workspace_idx: usize, containers: usize) -> (i32, i32) {
         let Some(monitor) = self.focused_monitor() else {
-            return 0;
+            return (0, 0);
         };
 
         let Some(workspace) = monitor.workspaces().get(workspace_idx) else {
-            return 0;
+            return (0, 0);
         };
 
         let Some(count) = NonZeroUsize::new(containers) else {
-            return 0;
+            return (0, 0);
         };
 
         let work_area = monitor.work_area_size;
@@ -1366,9 +1432,9 @@ impl WindowManager {
                 &[],
             )
             .iter()
-            .map(|rect| rect.right)
-            .min()
-            .unwrap_or(0)
+            .fold((i32::MAX, i32::MAX), |(w, h), rect| {
+                (w.min(rect.right), h.min(rect.bottom))
+            })
     }
 
     #[tracing::instrument(skip(self))]
