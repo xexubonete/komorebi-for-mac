@@ -27,6 +27,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::NSDeviceDescriptionKey;
 use objc2_app_kit::NSEvent;
 use objc2_app_kit::NSScreen;
+use objc2_app_kit::NSApplicationActivationPolicy;
 use objc2_app_kit::NSWorkspace;
 use objc2_application_services::AXUIElement;
 use objc2_application_services::AXValue;
@@ -302,7 +303,106 @@ impl MacosApi {
     }
 
     #[tracing::instrument(skip_all)]
+    /// Take every running application's windows out of macOS full screen, before
+    /// anything else about startup is decided.
+    ///
+    /// CGWindowListCopyWindowInfo -- the enumeration the rest of startup is built on --
+    /// asks for windows "on screen", and a full-screen window lives on a Space of its
+    /// own that is not the one active when komorebi starts. It is not filtered out: it is
+    /// never reported. So a window left full screen when the session ended (a video
+    /// playing, the lid closed) never reaches the loop below at all, however careful the
+    /// checks in it are -- its cell in the grid stays empty and the window is nowhere to
+    /// be found. Reported and fixed as [`crate::window::Window::is_native_fullscreen`]
+    /// first; that fix could not fire because it lived downstream of a list that had
+    /// already dropped the window.
+    ///
+    /// This runs first and reaches every window a different way: the Accessibility API,
+    /// asked application by application through the system's own list of running
+    /// processes, which does not care what Space a window is on. Exiting full screen is
+    /// itself asynchronous, so a short wait follows before the CGWindowList-based
+    /// enumeration below, giving macOS time to finish moving the window back onto a
+    /// normal Space where that enumeration can see it.
+    fn rescue_fullscreen_windows() {
+        // TIMING: this asks every running application for its windows over Accessibility,
+        // which is a round trip per process. Grep marker: TIMING fullscreen-rescue.
+        let started = std::time::Instant::now();
+        let workspace = NSWorkspace::sharedWorkspace();
+        let mut rescued_any = false;
+        let mut asked = 0usize;
+
+        for running in workspace.runningApplications().iter() {
+            // Only applications that appear in the Dock. The rest are helpers, agents and
+            // extensions -- 101 processes were being asked, and about ninety of them have
+            // no windows to speak of. Each question is a round trip to another process
+            // over Accessibility, and the whole pass cost 3.6 seconds of a startup the
+            // user is waiting through.
+            //
+            // A window cannot be in macOS full screen without belonging to an application
+            // that can be brought to the front, so nothing that matters here is skipped.
+            if running.activationPolicy() != NSApplicationActivationPolicy::Regular {
+                continue;
+            }
+
+            let pid = running.processIdentifier();
+
+            // Every other application, including komorebi's own, either has no windows
+            // to speak of or is not one Accessibility will hand a window list for without
+            // first being granted the entitlement it does not have. A failure here is the
+            // ordinary case, not a problem.
+            let Ok(application) = Application::new(pid) else {
+                continue;
+            };
+
+            asked += 1;
+
+            let Some(elements) = application.window_elements() else {
+                continue;
+            };
+
+            for element in elements {
+                let Ok(window) = Window::new(element, application.clone()) else {
+                    continue;
+                };
+
+                if !window.is_native_fullscreen() {
+                    continue;
+                }
+
+                tracing::warn!(
+                    "STARTUP window {} ({:?}) found in full screen via Accessibility                      (CGWindowList would not have reported it); taking it out",
+                    window.id,
+                    window.exe()
+                );
+
+                if let Err(error) = window.leave_native_fullscreen() {
+                    tracing::warn!(
+                        "could not take window {} out of full screen: {error}",
+                        window.id
+                    );
+                    continue;
+                }
+
+                rescued_any = true;
+            }
+        }
+
+        tracing::warn!(
+            "TIMING fullscreen-rescue took={}ms ({asked} applications asked)",
+            started.elapsed().as_millis()
+        );
+
+        if rescued_any {
+            // Leaving full screen is animated and asynchronous; CGWindowListCopyWindowInfo
+            // called immediately after can still miss the window mid-transition. A second
+            // or so is comfortably more than the animation takes and is paid only on the
+            // rare startup that actually had something to rescue.
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+        }
+    }
+
     pub fn load_workspace_information(wm: &mut WindowManager) -> Result<(), LibraryError> {
+        Self::rescue_fullscreen_windows();
+
         let mut monitor_size_map = HashMap::new();
         let mut monitor_focused_ws = HashMap::new();
         let mut monitor_window_map: HashMap<usize, Vec<Window>> = HashMap::new();
@@ -317,11 +417,17 @@ impl MacosApi {
             tracing::info!("{} windows found", window_list_info.len());
 
             for raw_window_info in cf_array_as::<CFDictionary>(&window_list_info) {
-                if let Some(info) = WindowInfo::new(raw_window_info).validated() {
+                let raw = WindowInfo::new(raw_window_info);
+                let raw_owner = raw.owner_name_for_trace();
+                let raw_bounds = raw.bounds_for_trace();
+
+                if let Some(info) = raw.validated() {
                     let window_rect = Rect::from(info.bounds);
+                    let mut on_a_monitor = false;
 
                     for (monitor_idx, monitor_size) in &monitor_size_map {
                         if monitor_size.contains(&window_rect) {
+                            on_a_monitor = true;
                             let application = match wm.applications.entry(info.owner_pid) {
                                 Entry::Occupied(entry) => entry.into_mut(),
                                 Entry::Vacant(vacant) => {
@@ -332,16 +438,41 @@ impl MacosApi {
                                 }
                             };
 
-                            if let Some(window) = application.window_by_id(info.window_id) {
-                                let mut rule_debug = RuleDebug::default();
-                                if window.should_manage(None, &mut rule_debug)? {
-                                    window.observe(&wm.run_loop, None)?;
-                                    monitor_window_map.entry(*monitor_idx).or_default().push(window);
-                                    valid_window_count += 1
+                            match application.window_by_id(info.window_id) {
+                                Some(window) => {
+                                    let mut rule_debug = RuleDebug::default();
+                                    if window.should_manage(None, &mut rule_debug)? {
+                                        window.observe(&wm.run_loop, None)?;
+                                        monitor_window_map
+                                            .entry(*monitor_idx)
+                                            .or_default()
+                                            .push(window);
+                                        valid_window_count += 1
+                                    } else {
+                                        tracing::warn!(
+                                            "SKIP {raw_owner:?} id={} should_manage said no",
+                                            info.window_id
+                                        );
+                                    }
                                 }
+                                None => tracing::warn!(
+                                    "SKIP {raw_owner:?} id={} accessibility does not know it",
+                                    info.window_id
+                                ),
                             }
                         }
                     }
+
+                    if !on_a_monitor {
+                        tracing::warn!(
+                            "SKIP {raw_owner:?} id={} outside every monitor {window_rect:?}",
+                            info.window_id
+                        );
+                    }
+                } else {
+                    // At debug: these are dozens of tiny system windows -- menu bar
+                    // icons, mostly -- and they say nothing useful.
+                    tracing::debug!("SKIP {raw_owner:?} does not pass the initial filter {raw_bounds:?}");
                 }
             }
 
