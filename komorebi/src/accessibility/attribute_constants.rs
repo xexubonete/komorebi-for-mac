@@ -42,6 +42,9 @@ pub const kAXZoomButtonAttribute: &str = "AXZoomButton";
 pub const kAXMinimizeButtonAttribute: &str = "AXMinimizeButton";
 pub const kAXToolbarButtonAttribute: &str = "AXToolbarButton";
 pub const kAXFullScreenButtonAttribute: &str = "AXFullScreenButton";
+/// Whether the window is in the macOS full-screen mode -- the one that gives the window
+/// a Space of its own, not a window merely resized to fill the display.
+pub const kAXFullScreenAttribute: &str = "AXFullScreen";
 pub const kAXProxyAttribute: &str = "AXProxy";
 pub const kAXGrowAreaAttribute: &str = "AXGrowArea";
 pub const kAXModalAttribute: &str = "AXModal";

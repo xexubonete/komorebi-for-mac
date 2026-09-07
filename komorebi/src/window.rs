@@ -15,6 +15,7 @@ use crate::accessibility::AccessibilityApi;
 use crate::accessibility::action_constants::kAXPressAction;
 use crate::accessibility::attribute_constants::kAXCloseButtonAttribute;
 use crate::accessibility::attribute_constants::kAXFocusedAttribute;
+use crate::accessibility::attribute_constants::kAXFullScreenAttribute;
 use crate::accessibility::attribute_constants::kAXMainAttribute;
 use crate::accessibility::attribute_constants::kAXMinimizedAttribute;
 use crate::accessibility::attribute_constants::kAXParentAttribute;
@@ -906,6 +907,34 @@ impl Window {
         }
 
         None
+    }
+
+    /// Whether this window is in the macOS full-screen mode.
+    ///
+    /// Not the same as a window filling the screen: full screen moves the window onto a
+    /// Space of its own, where komorebi has no say over it at all.
+    pub fn is_native_fullscreen(&self) -> bool {
+        AccessibilityApi::copy_attribute_value::<CFBoolean>(
+            &self.element,
+            kAXFullScreenAttribute,
+        )
+        .is_some_and(|value| value.as_bool())
+    }
+
+    /// Bring a window back out of the macOS full-screen mode.
+    ///
+    /// A window left full screen when the session ends comes back full screen, on its own
+    /// Space, and komorebi cannot place it -- so its cell in the grid sits empty and the
+    /// window is nowhere to be found. Taking it out on the way in puts it back where the
+    /// layout expects it.
+    pub fn leave_native_fullscreen(&self) -> Result<(), AccessibilityError> {
+        let cf_boolean = CFBoolean::new(false);
+
+        AccessibilityApi::set_attribute_cf_value(
+            &self.element,
+            kAXFullScreenAttribute,
+            &**cf_boolean,
+        )
     }
 
     pub fn role(&self) -> Option<String> {
