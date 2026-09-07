@@ -451,14 +451,39 @@ pub struct ValidWindowInfo {
 }
 
 impl WindowInfo {
+    /// Only for diagnostics: which application the window server says this belongs to.
+    pub fn owner_name_for_trace(&self) -> String {
+        self.owner_name.clone()
+    }
+
+    /// Only for diagnostics: the rectangle the window server reports.
+    pub fn bounds_for_trace(&self) -> WindowBounds {
+        self.bounds
+    }
+
+    /// The cheap first pass over what the window server reports, before anything is
+    /// asked of the application itself.
+    ///
+    /// It used to require a non-empty title, on the assumption that a window without one
+    /// is one of the invisible helpers applications keep around. Photos disproves that:
+    /// its main window has no title at all, so it was dropped here and never reached the
+    /// checks that would have accepted it. It could still be picked up while komorebi was
+    /// running -- a window-created event goes down a different path -- which is why it
+    /// tiled correctly until the next restart and then quietly stopped being managed.
+    ///
+    /// The title is not read by anything downstream; it was only ever a guess at what
+    /// counts as a real window. The real decision belongs to `should_manage`, which asks
+    /// the window what kind of window it is, and to the lookup below it, which only ever
+    /// matches ids the Accessibility API also knows about -- so the debris the window
+    /// server reports has no way through regardless.
     pub fn validated(self) -> Option<ValidWindowInfo> {
-        if let Some(name) = self.name
-            && let Some(window_id) = self.window_id
+        if let Some(window_id) = self.window_id
             && self.alpha != 0.0
             && self.bounds.y != 0.0
             && self.bounds.height != 0.0
-            && !name.is_empty()
         {
+            let name = self.name.unwrap_or_default();
+
             return Some(ValidWindowInfo {
                 name,
                 owner_pid: self.owner_pid,
