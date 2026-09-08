@@ -505,9 +505,12 @@ impl WindowManager {
 
                         // Not if komorebi caused this focus change itself: that is its own
                         // echo, and following it means arguing with the user mid-navigation.
+                        // And not if the focus change is fallout rather than a request --
+                        // see `focus_change_is_the_user_asking`.
                         if !is_on_current_workspace
                             && let Some((m_idx, w_idx)) = is_known
                             && !workspace_reconciliator::focus_was_ours(window_id)
+                            && self.focus_change_is_the_user_asking(window_id)
                         {
                             workspace_reconciliator::send_notification(m_idx, w_idx, event);
                             needs_reconciliation = true;
@@ -914,6 +917,22 @@ impl WindowManager {
                         "workspace is now empty, activating Finder to prevent unwanted workspace switch"
                     );
                     MacosApi::activate_finder();
+                } else {
+                    // Windows are still here, so focus belongs to one of them.
+                    //
+                    // macOS hands focus back to whatever the user was in before, which is
+                    // often an application on another workspace; left alone, that is where
+                    // focus stays, on a window they cannot even see. The empty case above
+                    // reaches for Finder for want of anything better -- here there is
+                    // something better, and it is right in front of them.
+                    let mouse_follows_focus = self.mouse_follows_focus;
+
+                    if let Ok(workspace) = self.focused_workspace()
+                        && let Some(container) = workspace.focused_container()
+                        && let Some(window) = container.focused_window()
+                    {
+                        let _ = window.focus(mouse_follows_focus);
+                    }
                 }
 
                 self.update_focused_workspace(false, false)?;

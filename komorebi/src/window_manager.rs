@@ -1594,6 +1594,52 @@ impl WindowManager {
         Ok(())
     }
 
+    /// Whether a focus change onto a window on another workspace is really the user
+    /// asking to go there.
+    ///
+    /// Quitting an application makes macOS hand focus to whatever it can find, which is
+    /// usually whatever the user was in before -- and that very often lives on another
+    /// workspace. Read as a request, it drags the user away from the windows still in
+    /// front of them, over a window they never asked for. It is the closing window
+    /// talking, not them.
+    ///
+    /// Two things separate that from a real request, and both are answered by looking at
+    /// the state rather than by waiting to see what happens next:
+    pub fn focus_change_is_the_user_asking(&self, window_id: u32) -> bool {
+        // Whatever this report says, something else is at the front now: komorebi
+        // choosing a window after a close, or the user moving on again. Following an
+        // overtaken report lands them on a workspace for a window that is not even
+        // focused. A foreground macOS will not name is no evidence either way, so it is
+        // not held against the report.
+        if let Some(foreground) = MacosApi::foreground_window_id()
+            && foreground != window_id
+        {
+            tracing::warn!(
+                "FOLLOW declined: {window_id} is not at the front any more (that is {foreground})"
+            );
+
+            return false;
+        }
+
+        // The window this workspace was sitting on has just stopped existing, so this
+        // focus change is its funeral: macOS had to give focus to something, and it
+        // reached for another workspace. The windows still here are where the user is.
+        if let Ok(workspace) = self.focused_workspace()
+            && let Some(container) = workspace.focused_container()
+            && let Some(window) = container.focused_window()
+            && !window.is_valid()
+        {
+            tracing::warn!(
+                "FOLLOW declined: window {} on this workspace has just closed; staying put",
+                window.id
+            );
+
+            return false;
+        }
+
+        true
+    }
+
     pub fn reap_invalid_windows_for_application(&mut self, process_id: i32) -> eyre::Result<()> {
         let application = self.application(process_id)?;
         let mut valid_window_ids = vec![];
