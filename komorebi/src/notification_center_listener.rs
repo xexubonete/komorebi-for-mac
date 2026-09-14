@@ -44,6 +44,18 @@ define_class! {
                 | "com.apple.screenIsLocked"
                 | "com.apple.screensaver.didstart" => {
                     crate::session::note_system_slept();
+                    crate::reaper::note_screen_covered();
+                    return;
+                }
+                // And the other half, which komorebi was never told about: the screen
+                // coming back. Without it, the "do not reap" state would have to guess
+                // when it was over, and guessing is how a screensaver that lasted three
+                // seconds ended up costing the whole layout.
+                "com.apple.screenIsUnlocked"
+                | "com.apple.screensaver.didstop"
+                | "NSWorkspaceDidWakeNotification"
+                | "NSWorkspaceScreensDidWakeNotification" => {
+                    crate::reaper::note_screen_returned();
                     return;
                 }
                 _ => {}
@@ -261,7 +273,12 @@ impl NotificationCenterListener {
             // happens several times a day.
             let distributed = NSDistributedNotificationCenter::defaultCenter();
 
-            for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
+            for name in [
+                "com.apple.screenIsLocked",
+                "com.apple.screensaver.didstart",
+                "com.apple.screenIsUnlocked",
+                "com.apple.screensaver.didstop",
+            ] {
                 distributed.addObserver_selector_name_object(
                     &observer.inner,
                     sel!(handleNotification:),

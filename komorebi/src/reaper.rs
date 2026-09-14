@@ -9,6 +9,8 @@ use crossbeam_channel::Sender;
 use objc2_core_foundation::CFBoolean;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 pub enum ReaperNotification {
@@ -65,6 +67,11 @@ fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()>
         }
 
         match notification {
+            ReaperNotification::InvalidWindow(window_id) if screen_is_covered() => {
+                tracing::warn!(
+                    "not reaping {window_id} while the screen is covered; it is still there"
+                );
+            }
             ReaperNotification::InvalidWindow(window_id) => {
                 let mut should_update = false;
                 for monitor in wm.monitors_mut() {
@@ -127,11 +134,45 @@ fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()>
     Ok(())
 }
 
+/// Whether the screen is covered: a screensaver is up, or the machine has locked or
+/// slept.
+///
+/// While it is, Accessibility cannot reach windows, and every call about them fails the
+/// same way a call about a destroyed window does. That is not evidence of anything --
+/// the windows are exactly where they were, behind whatever is covering them.
+///
+/// Reaping on that evidence emptied the model completely: measured, komorebi went from
+/// six windows to **zero** when a screensaver came up for a few seconds. The recovery
+/// then made it worse, because the wake-up script saw a model with nothing in it,
+/// decided komorebi had lost its grip and restarted it onto an older saved session --
+/// throwing away the layout that was, in fact, still perfectly fine on screen.
+static SCREEN_COVERED: AtomicBool = AtomicBool::new(false);
+
+pub fn note_screen_covered() {
+    tracing::warn!("COVERED: windows are out of reach, nothing will be reaped");
+    SCREEN_COVERED.store(true, Ordering::SeqCst);
+}
+
+pub fn note_screen_returned() {
+    if SCREEN_COVERED.swap(false, Ordering::SeqCst) {
+        tracing::warn!("COVERED lifted: windows are reachable again");
+    }
+}
+
+pub fn screen_is_covered() -> bool {
+    SCREEN_COVERED.load(Ordering::SeqCst)
+}
+
 pub fn notify_on_error(
     window: &Window,
     result: Result<(), AccessibilityError>,
 ) -> Result<(), AccessibilityError> {
     if let Err(_error) = &result {
+        // Nothing is reaped while the screen is covered: see [`SCREEN_COVERED`].
+        if screen_is_covered() {
+            return result;
+        }
+
         let mut should_reap = true;
         let tabbed_applications = TABBED_APPLICATIONS.lock();
         if tabbed_applications.contains(&window.application.name().unwrap_or_default())
