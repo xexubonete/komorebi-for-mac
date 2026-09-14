@@ -510,7 +510,7 @@ impl WindowManager {
                         if !is_on_current_workspace
                             && let Some((m_idx, w_idx)) = is_known
                             && !workspace_reconciliator::focus_was_ours(window_id)
-                            && self.focus_change_is_the_user_asking(window_id)
+                            && self.focus_change_is_the_user_asking()
                         {
                             workspace_reconciliator::send_notification(m_idx, w_idx, event);
                             needs_reconciliation = true;
@@ -900,6 +900,19 @@ impl WindowManager {
                     }
                 }
 
+                // How many windows this workspace had before the reaping below.
+                //
+                // A window closing is only komorebi's business if the window was one of
+                // its own. Any application can destroy a window -- a launcher dismissing
+                // itself does it every time it is used -- and treating that as "a window
+                // here has gone, take focus" undoes whatever the user just asked for.
+                // Measured: opening an application from a launcher put focus back on the
+                // window komorebi had selected before, every single time.
+                let windows_before = self
+                    .focused_workspace()
+                    .map(|workspace| workspace.containers().len())
+                    .unwrap_or(0);
+
                 if should_force_reap {
                     let workspace = self.focused_workspace_mut()?;
                     workspace.reap_invalid_windows_for_application(process_id, &[])?;
@@ -912,12 +925,17 @@ impl WindowManager {
                 // instead of letting an app on another workspace take focus (technically
                 // the other app will take focus first, but this ensures that _eventually_
                 // i.e. quicker than the user can recognize, Finder will be the focused app)
-                if self.focused_workspace()?.containers().is_empty() {
+                if windows_before > 0 && self.focused_workspace()?.containers().is_empty() {
                     tracing::debug!(
                         "workspace is now empty, activating Finder to prevent unwanted workspace switch"
                     );
                     MacosApi::activate_finder();
-                } else {
+                } else if self
+                    .focused_workspace()
+                    .map(|workspace| workspace.containers().len())
+                    .unwrap_or(0)
+                    < windows_before
+                {
                     // Windows are still here, so focus belongs to one of them.
                     //
                     // macOS hands focus back to whatever the user was in before, which is

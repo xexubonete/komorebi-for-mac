@@ -1603,24 +1603,17 @@ impl WindowManager {
     /// front of them, over a window they never asked for. It is the closing window
     /// talking, not them.
     ///
-    /// Two things separate that from a real request, and both are answered by looking at
-    /// the state rather than by waiting to see what happens next:
-    pub fn focus_change_is_the_user_asking(&self, window_id: u32) -> bool {
-        // Whatever this report says, something else is at the front now: komorebi
-        // choosing a window after a close, or the user moving on again. Following an
-        // overtaken report lands them on a workspace for a window that is not even
-        // focused. A foreground macOS will not name is no evidence either way, so it is
-        // not held against the report.
-        if let Some(foreground) = MacosApi::foreground_window_id()
-            && foreground != window_id
-        {
-            tracing::warn!(
-                "FOLLOW declined: {window_id} is not at the front any more (that is {foreground})"
-            );
-
-            return false;
-        }
-
+    /// What separates that from a real request is answered by looking at the state rather
+    /// than by waiting to see what happens next.
+    ///
+    /// It used to also refuse a report naming a window that was not at the front, on the
+    /// grounds that it had been overtaken. That was wrong, and wrong in the worst way:
+    /// **the report announces a window coming to the front, it does not confirm one that
+    /// already is**. Opening an application from a launcher declined every time -- the
+    /// launcher is still being dismissed when komorebi handles the event, and the
+    /// foreground still reads as whatever was there before. Measured: 31 refusals in a
+    /// morning, every one of them wrong.
+    pub fn focus_change_is_the_user_asking(&self) -> bool {
         // The window this workspace was sitting on has just stopped existing, so this
         // focus change is its funeral: macOS had to give focus to something, and it
         // reached for another workspace. The windows still here are where the user is.
