@@ -15,6 +15,7 @@ use komorebi::monitor_reconciliator;
 use komorebi::notification_center_listener::NotificationCenterListener;
 use komorebi::process_command::listen_for_commands;
 use komorebi::process_event::listen_for_events;
+use komorebi::focus_follows_mouse;
 use komorebi::reaper;
 use komorebi::static_config::StaticConfig;
 use komorebi::theme_manager;
@@ -315,6 +316,7 @@ fn main() -> eyre::Result<()> {
     monitor_reconciliator::listen_for_notifications(wm.clone())?;
     reaper::listen_for_notifications(wm.clone());
     workspace_reconciliator::listen_for_notifications(wm.clone());
+    focus_follows_mouse::listen(wm.clone());
 
     listen_for_commands(wm.clone());
     listen_for_events(wm.clone());

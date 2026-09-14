@@ -57,6 +57,7 @@ pub mod core;
 pub mod core_graphics;
 pub mod display_reconfiguration_listener;
 pub mod input_event_listener;
+pub mod focus_follows_mouse;
 pub mod ioreg;
 pub mod lockable_sequence;
 pub mod macos_api;
