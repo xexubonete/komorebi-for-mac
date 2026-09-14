@@ -113,6 +113,7 @@ gen_enum_subcommand_args! {
     CycleLayout: CycleDirection,
     // WatchConfiguration: BooleanState,
     MouseFollowsFocus: BooleanState,
+    FocusFollowsMouse: BooleanState,
     Query: StateQuery,
     // WindowHidingBehaviour: HidingBehaviour,
     CrossMonitorMoveBehaviour: MoveBehaviour,
@@ -1245,6 +1246,11 @@ enum SubCommand {
     MouseFollowsFocus(MouseFollowsFocus),
     /// Toggle mouse follows focus on all workspaces
     ToggleMouseFollowsFocus,
+    /// Enable or disable focusing the window under the cursor
+    #[clap(arg_required_else_help = true)]
+    FocusFollowsMouse(FocusFollowsMouse),
+    /// Toggle focusing the window under the cursor
+    ToggleFocusFollowsMouse,
     // /// Generate common app-specific configurations and fixes to use in komorebi.ahk
     // #[clap(arg_required_else_help = true)]
     // #[clap(alias = "ahk-asc")]
@@ -2426,6 +2432,12 @@ exit 1
         }
         SubCommand::ToggleMouseFollowsFocus => {
             send_message(&SocketMessage::ToggleMouseFollowsFocus)?;
+        }
+        SubCommand::ToggleFocusFollowsMouse => {
+            send_message(&SocketMessage::ToggleFocusFollowsMouse)?;
+        }
+        SubCommand::FocusFollowsMouse(args) => {
+            send_message(&SocketMessage::FocusFollowsMouse(args.boolean_state.into()))?;
         }
         SubCommand::MouseFollowsFocus(args) => {
             send_message(&SocketMessage::MouseFollowsFocus(args.boolean_state.into()))?;

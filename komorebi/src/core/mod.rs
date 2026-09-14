@@ -455,6 +455,8 @@ pub enum SocketMessage {
     // ToggleFocusFollowsMouse(FocusFollowsMouseImplementation),
     MouseFollowsFocus(bool),
     ToggleMouseFollowsFocus,
+    FocusFollowsMouse(bool),
+    ToggleFocusFollowsMouse,
     // RemoveTitleBar(ApplicationIdentifier, String),
     // ToggleTitleBars,
     AddSubscriberSocket(String),

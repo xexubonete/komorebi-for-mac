@@ -1601,6 +1601,13 @@ impl WindowManager {
             SocketMessage::ToggleMouseFollowsFocus => {
                 self.mouse_follows_focus = !self.mouse_follows_focus;
             }
+            SocketMessage::FocusFollowsMouse(enable) => {
+                crate::focus_follows_mouse::set_enabled(enable);
+            }
+            SocketMessage::ToggleFocusFollowsMouse => {
+                let enabled = crate::focus_follows_mouse::is_enabled();
+                crate::focus_follows_mouse::set_enabled(!enabled);
+            }
             SocketMessage::CrossMonitorMoveBehaviour(behaviour) => {
                 self.cross_monitor_move_behaviour = behaviour;
             }
