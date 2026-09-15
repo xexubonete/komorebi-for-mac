@@ -210,14 +210,28 @@ System Settings → Privacy & Security, and add the `komorebi` binary to **both*
 - **Screen Recording** — needed to read window titles, and therefore by every rule that
   matches on one.
 
-**komorebi asks for both, and refuses to start without them.** Upstream only prompts for
-Screen Recording; this branch prompts for Accessibility too, and treats a missing
-permission as fatal rather than starting an environment that looks alive and misbehaves.
+**komorebi asks for both.** Upstream only prompts for Screen Recording; this branch prompts
+for Accessibility too. What it does with the answer differs per permission: **Accessibility
+is fatal**, since without it komorebi cannot move a single window, while a missing **Screen
+Recording** only logs a warning — a tiling manager without window titles still tiles, and
+refusing to start over it would trade a degraded desktop for no desktop at all.
 
 Before prompting it retries for twenty seconds, because a LaunchAgent can start before the
 WindowServer is ready and the permission APIs report `false` even when the answer is yes.
-The dialogs only appear once per machine — a stable code signature (step 2) is what keeps
-macOS remembering the answer across rebuilds.
+
+`komorebi --check-permissions` reports both and exits non-zero if either is missing, which
+is what lets an installer verify instead of assume. Read it with one caveat: macOS credits a
+permission request to the *responsible* process, which for anything started from a terminal
+is the terminal — so the same binary can report Screen Recording missing from a shell and
+work fine under `launchd`. To check the daemon, check what it can do: if it is alive it has
+Accessibility, and if it reads window titles it has Screen Recording.
+
+The dialogs only appear once per machine, as long as the binary keeps a **stable code
+signature** (step 2). This is why it must be rebuilt with `kbuild`, which signs, and never
+with a bare `cargo build`, whose ad-hoc signature changes on every build: macOS then reads
+it as a different program and silently stops applying both permissions. The row in System
+Settings still looks ticked, because that list goes by path — so the symptom is a komorebi
+that is denied permissions it appears to have been granted.
 
 ---
 
@@ -268,6 +282,7 @@ git clone https://github.com/xexubonete/dotfiles.git ~/dev/dotfiles
 | `komorebi/wakeup.sh` | Run by sleepwatcher on wake. Waking is when displays reshuffle. |
 | `komorebi/lockwatch.sh` | Watches for screen lock/unlock, which is what the session latch depends on. |
 | `komorebi/setup-codesign.sh` | Self-signed certificate so Accessibility permission survives a rebuild. |
+| `komorebi/ensure-permissions.sh` | Verifies both permissions were actually granted, and keeps asking until they are. |
 | `komorebi/tab-to-workspace.sh` | Sends the focused window to a workspace by name. |
 
 ### Keybindings

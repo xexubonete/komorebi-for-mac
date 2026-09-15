@@ -54,55 +54,45 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 
-fn check_permissions() -> eyre::Result<()> {
-    // When launched via LaunchAgent at login, the WindowServer may not be
-    // fully ready yet. The permission APIs return false even if the user has
-    // already granted the permission. Retry a few times before giving up.
-    for attempt in 1..=10 {
-        let screen_ok = CGPreflightScreenCaptureAccess();
-        let ax_ok = unsafe { AXIsProcessTrusted() };
-
-        if screen_ok && ax_ok {
-            return Ok(());
-        }
-
-        if attempt < 10 {
-            tracing::info!(
-                "waiting for permissions (screen={screen_ok}, accessibility={ax_ok}), \
-                 attempt {attempt}/10"
-            );
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            continue;
-        }
-    }
-
-    // Out of retries, so this is a genuinely missing permission rather than a
-    // WindowServer that had not caught up. Ask for it: on a machine that has never
-    // granted it there is nobody to tell, and komorebi starting anyway produces an
-    // environment that looks alive and misbehaves -- no window titles, so every rule
-    // that matches on one silently stops applying.
-    //
-    // Both dialogs only ever appear once per machine. macOS remembers the answer, and
-    // a stable code signature is what keeps it remembered across rebuilds.
-    request_permissions()
+/// Which of the two macOS permissions komorebi needs are granted right now.
+///
+/// The check lives in this binary on purpose. macOS grants permissions per code
+/// signature, so a shell script asking on komorebi's behalf would only ever learn
+/// whether *the terminal* is trusted. Only komorebi can answer for komorebi -- which
+/// is why `--check-permissions` exists for the installer to call.
+struct Permissions {
+    screen_recording: bool,
+    accessibility: bool,
 }
 
-/// Prompt for whatever is still missing, then refuse to start without it.
-fn request_permissions() -> eyre::Result<()> {
-    let mut missing: Vec<&str> = Vec::new();
-
-    if !CGPreflightScreenCaptureAccess() {
-        // Shows the system dialog and returns whether it ended up granted.
-        if !CGRequestScreenCaptureAccess() {
-            missing.push("Screen Recording (needed to read window titles)");
+impl Permissions {
+    fn check() -> Self {
+        Self {
+            screen_recording: CGPreflightScreenCaptureAccess(),
+            accessibility: unsafe { AXIsProcessTrusted() },
         }
     }
 
-    if !unsafe { AXIsProcessTrusted() } {
-        // Prompting here is asynchronous and does not change the return value, so the
-        // dialog goes up and the answer is still whatever it was a moment ago. That is
-        // the point: it tells the user what to do, and komorebi refuses to run until
-        // they have done it.
+    fn all_granted(&self) -> bool {
+        self.screen_recording && self.accessibility
+    }
+}
+
+/// Put up the system dialog for whatever is missing.
+///
+/// Prompting is also what gets komorebi *listed* in System Settings: until a binary
+/// asks, there is no row to tick, and adding a bare executable by hand is awkward.
+/// So the installer prompts first and only then sends the user to the panel.
+fn prompt_for_missing(permissions: &Permissions) {
+    if !permissions.screen_recording {
+        // Shows the system dialog and returns whether it ended up granted.
+        CGRequestScreenCaptureAccess();
+    }
+
+    if !permissions.accessibility {
+        // Prompting here is asynchronous and does not change the return value: the
+        // dialog goes up and the answer is still whatever it was a moment ago. The
+        // caller has to re-check later, which is exactly what the installer loop does.
         let key: *const c_void =
             unsafe { kAXTrustedCheckOptionPrompt } as *const CFString as *const c_void;
         let value = CFBoolean::new(true);
@@ -122,26 +112,92 @@ fn request_permissions() -> eyre::Result<()> {
             )
         };
 
-        let trusted = match options {
-            Some(options) => unsafe { AXIsProcessTrustedWithOptions(Some(&options)) },
-            // No dictionary means no prompt, but the check still has to happen.
-            None => unsafe { AXIsProcessTrusted() },
-        };
+        if let Some(options) = options {
+            unsafe { AXIsProcessTrustedWithOptions(Some(&options)) };
+        }
+    }
+}
 
-        if !trusted {
-            missing.push("Accessibility (needed to move and resize windows)");
+/// Print the state of both permissions and exit 0 only if both are granted.
+///
+/// This is the installer's eyes: a script can open a settings panel, but it cannot
+/// tell whether anyone acted on it. Exit code 1 is what lets it keep asking.
+fn permissions_report(request: bool) -> ! {
+    if request {
+        prompt_for_missing(&Permissions::check());
+    }
+
+    // Re-read after prompting: the Accessibility dialog does not update the answer it
+    // returns, so the only honest value is the one read fresh.
+    let permissions = Permissions::check();
+
+    let mark = |granted: bool| if granted { "granted" } else { "MISSING" };
+    println!(
+        "accessibility: {}",
+        mark(permissions.accessibility)
+    );
+    println!(
+        "screen-recording: {}",
+        mark(permissions.screen_recording)
+    );
+
+    std::process::exit(if permissions.all_granted() { 0 } else { 1 })
+}
+
+fn check_permissions() -> eyre::Result<()> {
+    // When launched via LaunchAgent at login, the WindowServer may not be
+    // fully ready yet. The permission APIs return false even if the user has
+    // already granted the permission. Retry a few times before giving up.
+    for attempt in 1..=10 {
+        let permissions = Permissions::check();
+
+        if permissions.all_granted() {
+            return Ok(());
+        }
+
+        if attempt < 10 {
+            tracing::info!(
+                "waiting for permissions (screen={}, accessibility={}), attempt {attempt}/10",
+                permissions.screen_recording,
+                permissions.accessibility
+            );
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            continue;
         }
     }
 
-    if missing.is_empty() {
-        return Ok(());
+    // Out of retries, so this is a genuinely missing permission rather than a
+    // WindowServer that had not caught up. Ask for it: on a machine that has never
+    // granted it there is nobody to tell.
+    //
+    // The dialogs only appear when a permission is actually missing, and macOS
+    // remembers the answer as long as the binary keeps a stable code signature --
+    // which is why it must be built with `kbuild`, never with a bare `cargo build`.
+    prompt_for_missing(&Permissions::check());
+
+    let permissions = Permissions::check();
+
+    // Only Accessibility is fatal: without it komorebi cannot move or resize a single
+    // window, so starting would leave a process that does nothing. Screen Recording
+    // only costs window titles, and a tiling manager without titles still tiles --
+    // refusing to start over it trades a degraded desktop for no desktop at all.
+    if !permissions.screen_recording {
+        tracing::warn!(
+            "screen recording permission not granted - window titles are unavailable, \
+             so any rule that matches on a title will not apply. Grant it in System \
+             Settings -> Privacy & Security -> Screen Recording"
+        );
     }
 
-    eyre::bail!(
-        "komorebi cannot run without these permissions: {}. \
-         Grant them in System Settings -> Privacy & Security, then start komorebi again.",
-        missing.join(", ")
-    )
+    if !permissions.accessibility {
+        eyre::bail!(
+            "komorebi cannot run without the Accessibility permission, which is what \
+             lets it move and resize windows. Grant it in System Settings -> Privacy \
+             & Security -> Accessibility, then start komorebi again."
+        );
+    }
+
+    Ok(())
 }
 
 fn setup(log_level: LogLevel) -> eyre::Result<(WorkerGuard, WorkerGuard)> {
@@ -269,10 +325,25 @@ struct Opts {
     /// Level of log output verbosity
     #[clap(long, value_enum, default_value_t=LogLevel::Info)]
     log_level: LogLevel,
+    /// Report whether the macOS permissions komorebi needs are granted, then exit.
+    /// Exits 0 when both are, 1 when either is missing, so a script can act on it.
+    #[clap(long)]
+    check_permissions: bool,
+    /// Like --check-permissions, but first show the system dialog for whatever is
+    /// missing -- which is also what gets komorebi listed in System Settings.
+    #[clap(long)]
+    request_permissions: bool,
 }
 
 fn main() -> eyre::Result<()> {
     let opts: Opts = Opts::parse();
+
+    // Answer the installer before doing anything else: this must not start a daemon,
+    // touch the log files, or trip the single-instance check below.
+    if opts.check_permissions || opts.request_permissions {
+        permissions_report(opts.request_permissions);
+    }
+
     let (_guard, _color_guard) = setup(opts.log_level)?;
 
     // The main thread runs the CoreFoundation run loop: every Accessibility notification
@@ -441,4 +512,37 @@ fn main() -> eyre::Result<()> {
     let _ = std::fs::remove_file(socket);
 
     std::process::exit(130);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Permissions;
+
+    // The rest of the permission code is a thin wrapper over TCC: whether it reports
+    // the truth is a question about macOS, not about this crate, and only a machine
+    // with the permission actually revoked could answer it. What is worth pinning down
+    // is the rule that decides komorebi's fate, because getting it backwards is what
+    // turns a degraded desktop into no desktop at all.
+    #[test]
+    fn all_granted_requires_both_permissions() {
+        let cases = [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+        ];
+
+        for (screen_recording, accessibility, expected) in cases {
+            let permissions = Permissions {
+                screen_recording,
+                accessibility,
+            };
+
+            assert_eq!(
+                permissions.all_granted(),
+                expected,
+                "screen_recording={screen_recording}, accessibility={accessibility}"
+            );
+        }
+    }
 }
