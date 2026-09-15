@@ -245,9 +245,9 @@ impl Border {
             // chrome draw their own -- and there is no way to ask a window what its radius
             // is, so it comes from the per-application rules.
             self.ns_window
-                .set_corner_radius(crate::border_manager::border_radius_for(
-                    &self.application_name,
-                ) as f64);
+                .set_corner_radius(
+                    crate::border_manager::border_radius_for(&self.application_name) as f64,
+                );
             // TODO: why does this crash?
             // self.ns_window.window.setFrame_display(ns_rect, true);
             CATransaction::commit();
@@ -257,11 +257,8 @@ impl Border {
             // and update() runs far too often to flash on every call. Outside the
             // CATransaction above, which disables actions and would swallow it.
             if appeared {
-                self.ns_window.flash(
-                    width,
-                    crate::border_manager::flash_style(),
-                    colour,
-                );
+                self.ns_window
+                    .flash(width, crate::border_manager::flash_style(), colour);
             }
         })
     }

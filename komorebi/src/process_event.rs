@@ -216,7 +216,6 @@ impl WindowManager {
                     should_manage = false;
                 }
 
-
                 if !should_manage {
                     // At info: this is where events go to die, and a silent rejection is
                     // indistinguishable from an event that never came.
@@ -716,161 +715,163 @@ impl WindowManager {
                             }
                         }
 
-                        if let Some(s) = &self.pending_session {
-                            if s.windows.is_empty() {
-                                self.pending_session = None;
-                            }
+                        if let Some(s) = &self.pending_session
+                            && s.windows.is_empty()
+                        {
+                            self.pending_session = None;
                         }
 
                         crate::session::save(self);
                         border_manager::send_notification(None, None, false);
                     } else {
+                        let behaviour = self.window_management_behaviour(
+                            focused_monitor_idx,
+                            focused_workspace_idx,
+                        );
+                        let workspace = self.focused_workspace_mut()?;
+                        let workspace_contains_window = workspace.contains_window(window.id);
+                        let monocle_container = workspace.monocle_container.clone();
 
-                    let behaviour = self
-                        .window_management_behaviour(focused_monitor_idx, focused_workspace_idx);
-                    let workspace = self.focused_workspace_mut()?;
-                    let workspace_contains_window = workspace.contains_window(window.id);
-                    let monocle_container = workspace.monocle_container.clone();
+                        let floating_applications = FLOATING_APPLICATIONS.lock();
+                        let mut should_float = false;
 
-                    let floating_applications = FLOATING_APPLICATIONS.lock();
-                    let mut should_float = false;
+                        if !floating_applications.is_empty() {
+                            let regex_identifiers = REGEX_IDENTIFIERS.lock();
 
-                    if !floating_applications.is_empty() {
-                        let regex_identifiers = REGEX_IDENTIFIERS.lock();
-
-                        if let (
-                            Some(title),
-                            Some(exe_name),
-                            Some(role),
-                            Some(subrole),
-                            Some(path),
-                        ) = (
-                            window.title(),
-                            window.exe(),
-                            window.role(),
-                            window.subrole(),
-                            window.path(),
-                        ) {
-                            should_float = should_act(
-                                &title,
-                                &exe_name,
-                                &[&role, &subrole],
-                                &path.to_string_lossy(),
-                                &floating_applications,
-                                &regex_identifiers,
-                            )
-                            .is_some();
+                            if let (
+                                Some(title),
+                                Some(exe_name),
+                                Some(role),
+                                Some(subrole),
+                                Some(path),
+                            ) = (
+                                window.title(),
+                                window.exe(),
+                                window.role(),
+                                window.subrole(),
+                                window.path(),
+                            ) {
+                                should_float = should_act(
+                                    &title,
+                                    &exe_name,
+                                    &[&role, &subrole],
+                                    &path.to_string_lossy(),
+                                    &floating_applications,
+                                    &regex_identifiers,
+                                )
+                                .is_some();
+                            }
                         }
-                    }
 
-                    if behaviour.float_override
-                        || behaviour.floating_layer_override
-                        || (should_float && !matches!(event, WindowManagerEvent::Manage(_, _, _)))
-                    {
-                        let placement = if behaviour.floating_layer_override {
-                            // Floating layer override placement
-                            behaviour.floating_layer_placement
-                        } else if behaviour.float_override {
-                            // Float override placement
-                            behaviour.float_override_placement
+                        if behaviour.float_override
+                            || behaviour.floating_layer_override
+                            || (should_float
+                                && !matches!(event, WindowManagerEvent::Manage(_, _, _)))
+                        {
+                            let placement = if behaviour.floating_layer_override {
+                                // Floating layer override placement
+                                behaviour.floating_layer_placement
+                            } else if behaviour.float_override {
+                                // Float override placement
+                                behaviour.float_override_placement
+                            } else {
+                                // Float rule placement
+                                behaviour.float_rule_placement
+                            };
+                            // Center floating windows according to the proper placement if not
+                            // on a floating workspace
+                            let center_spawned_floats = placement.should_center() && workspace.tile;
+                            workspace.floating_windows_mut().push_back(window.clone());
+                            workspace.layer = WorkspaceLayer::Floating;
+                            if center_spawned_floats {
+                                let mut floating_window = window.clone();
+                                floating_window.center(
+                                    &workspace.globals.work_area,
+                                    placement.should_resize(),
+                                )?;
+                            }
+
+                            self.update_focused_workspace(false, false)?;
                         } else {
-                            // Float rule placement
-                            behaviour.float_rule_placement
-                        };
-                        // Center floating windows according to the proper placement if not
-                        // on a floating workspace
-                        let center_spawned_floats = placement.should_center() && workspace.tile;
-                        workspace.floating_windows_mut().push_back(window.clone());
-                        workspace.layer = WorkspaceLayer::Floating;
-                        if center_spawned_floats {
-                            let mut floating_window = window.clone();
-                            floating_window
-                                .center(&workspace.globals.work_area, placement.should_resize())?;
-                        }
+                            // This is the window the user just opened. If the layout that
+                            // follows has to rehouse anything for it to fit, focus belongs
+                            // on this one afterwards -- not on whatever got shuffled.
+                            crate::window_manager::note_window_opened(window.id);
 
-                        self.update_focused_workspace(false, false)?;
-                    } else {
-                        // This is the window the user just opened. If the layout that
-                        // follows has to rehouse anything for it to fit, focus belongs
-                        // on this one afterwards -- not on whatever got shuffled.
-                        crate::window_manager::note_window_opened(window.id);
-
-                        match behaviour.current_behaviour {
-                            WindowContainerBehaviour::Create => {
-                                workspace.new_container_for_window(&window)?;
-                                workspace.layer = WorkspaceLayer::Tiling;
-                                self.update_focused_workspace(false, false)?;
+                            match behaviour.current_behaviour {
+                                WindowContainerBehaviour::Create => {
+                                    workspace.new_container_for_window(&window)?;
+                                    workspace.layer = WorkspaceLayer::Tiling;
+                                    self.update_focused_workspace(false, false)?;
+                                }
+                                WindowContainerBehaviour::Append => {
+                                    let window_hiding_position =
+                                        workspace.globals.window_hiding_position;
+                                    workspace
+                                        .focused_container_mut()
+                                        .ok_or_eyre("there is no focused container")?
+                                        .add_window(&window, window_hiding_position)?;
+                                    workspace.layer = WorkspaceLayer::Tiling;
+                                    self.update_focused_workspace(true, false)?;
+                                }
                             }
-                            WindowContainerBehaviour::Append => {
-                                let window_hiding_position =
-                                    workspace.globals.window_hiding_position;
-                                workspace
-                                    .focused_container_mut()
-                                    .ok_or_eyre("there is no focused container")?
-                                    .add_window(&window, window_hiding_position)?;
-                                workspace.layer = WorkspaceLayer::Tiling;
-                                self.update_focused_workspace(true, false)?;
+
+                            // The window the user just opened ends up focused.
+                            //
+                            // macOS focuses a new window by itself, but komorebi takes it
+                            // apart and places it, and the focus does not survive that. The
+                            // window appears on screen with nothing focused at all -- which
+                            // is what leaves Brave's translation bubble hanging over the
+                            // layout, because a bubble like that only dismisses once its own
+                            // window becomes key. Focusing the Brave window by hand made both
+                            // symptoms go at once, which is what pointed here.
+                            //
+                            // There was already a rule that focus belongs on the window the
+                            // user just opened, but it lived inside the code that rehouses
+                            // windows too narrow for their column -- so it only ran when the
+                            // new window happened to trigger a relocation. Most of the time
+                            // nothing needed rehousing and nothing claimed the focus.
+                            if self.focused_workspace_mut().is_ok_and(|workspace| {
+                                workspace.focus_container_by_window(window.id).is_ok()
+                            }) {
+                                window.focus(self.mouse_follows_focus)?;
                             }
-                        }
 
-                        // The window the user just opened ends up focused.
-                        //
-                        // macOS focuses a new window by itself, but komorebi takes it
-                        // apart and places it, and the focus does not survive that. The
-                        // window appears on screen with nothing focused at all -- which
-                        // is what leaves Brave's translation bubble hanging over the
-                        // layout, because a bubble like that only dismisses once its own
-                        // window becomes key. Focusing the Brave window by hand made both
-                        // symptoms go at once, which is what pointed here.
-                        //
-                        // There was already a rule that focus belongs on the window the
-                        // user just opened, but it lived inside the code that rehouses
-                        // windows too narrow for their column -- so it only ran when the
-                        // new window happened to trigger a relocation. Most of the time
-                        // nothing needed rehousing and nothing claimed the focus.
-                        if self
-                            .focused_workspace_mut()
-                            .is_ok_and(|workspace| workspace.focus_container_by_window(window.id).is_ok())
-                        {
-                            window.focus(self.mouse_follows_focus)?;
-                        }
-
-                        // TODO: not sure if this is needed on macOS
-                        if (self.focused_workspace()?.containers().len() == 1
-                            && self.focused_workspace()?.floating_windows().is_empty())
-                            || (self.focused_workspace()?.containers().is_empty()
-                                && self.focused_workspace()?.floating_windows().len() == 1)
-                        {
-                            // If after adding this window the workspace only contains 1 window, it
-                            // means it was previously empty and we focused the desktop to unfocus
-                            // any previous window from other workspace, so now we need to focus
-                            // this window again. This is needed because sometimes some windows
-                            // first send the `FocusChange` event and only the `Show` event after
-                            // and we will be focusing the desktop on the `FocusChange` event since
-                            // it is still empty.
-                            window.focus(self.mouse_follows_focus)?;
-                        }
-                    }
-
-                    if workspace_contains_window {
-                        let mut monocle_window_event = false;
-                        if let Some(ref monocle) = monocle_container
-                            && let Some(monocle_window) = monocle.focused_window()
-                        {
-                            // we should have the window_id at this point
-                            if monocle_window.id == window_id.unwrap_or_default() {
-                                monocle_window_event = true;
+                            // TODO: not sure if this is needed on macOS
+                            if (self.focused_workspace()?.containers().len() == 1
+                                && self.focused_workspace()?.floating_windows().is_empty())
+                                || (self.focused_workspace()?.containers().is_empty()
+                                    && self.focused_workspace()?.floating_windows().len() == 1)
+                            {
+                                // If after adding this window the workspace only contains 1 window, it
+                                // means it was previously empty and we focused the desktop to unfocus
+                                // any previous window from other workspace, so now we need to focus
+                                // this window again. This is needed because sometimes some windows
+                                // first send the `FocusChange` event and only the `Show` event after
+                                // and we will be focusing the desktop on the `FocusChange` event since
+                                // it is still empty.
+                                window.focus(self.mouse_follows_focus)?;
                             }
                         }
 
-                        let workspace = self.focused_workspace()?;
-                        if !(monocle_window_event || workspace.layer != WorkspaceLayer::Tiling)
-                            && monocle_container.is_some()
-                        {
-                            window.hide(workspace.globals.window_hiding_position)?;
-                        }
-                    }
+                        if workspace_contains_window {
+                            let mut monocle_window_event = false;
+                            if let Some(ref monocle) = monocle_container
+                                && let Some(monocle_window) = monocle.focused_window()
+                            {
+                                // we should have the window_id at this point
+                                if monocle_window.id == window_id.unwrap_or_default() {
+                                    monocle_window_event = true;
+                                }
+                            }
 
+                            let workspace = self.focused_workspace()?;
+                            if !(monocle_window_event || workspace.layer != WorkspaceLayer::Tiling)
+                                && monocle_container.is_some()
+                            {
+                                window.hide(workspace.globals.window_hiding_position)?;
+                            }
+                        }
                     } // else (no session target — normal flow)
                 }
             }

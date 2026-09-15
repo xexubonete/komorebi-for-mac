@@ -118,10 +118,7 @@ pub fn note_focus_we_caused(window_id: u32) {
 pub fn focus_was_ours(window_id: u32) -> bool {
     let mut ours = FOCUS_WE_CAUSED.lock();
 
-    let Some(idx) = ours
-        .iter()
-        .position(|focus| focus.window_id == window_id)
-    else {
+    let Some(idx) = ours.iter().position(|focus| focus.window_id == window_id) else {
         return false;
     };
 
@@ -142,8 +139,6 @@ pub fn focus_was_ours(window_id: u32) -> bool {
 pub fn note_user_changed_workspace() {
     USER_WORKSPACE_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
-
-
 
 static RECONCILIATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LAST_RECONCILIATION: AtomicU64 = AtomicU64::new(0);
@@ -241,7 +236,6 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
             continue;
         }
 
-
         RECONCILIATION_IN_PROGRESS.store(true, Ordering::Relaxed);
         tracing::info!("running reconciliation for notification {notification:?}");
 
@@ -289,17 +283,18 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
             // not manage coming to the front -- System Settings, opened from a launcher
             // -- is the user going somewhere else, and stealing focus back drags them out
             // of the window that just appeared.
-            let triggered_by_managed_window = notification
-                .triggered_by
-                .window_id()
-                .is_some_and(|window_id| {
-                    wm.monitors().iter().any(|monitor| {
-                        monitor
-                            .workspaces()
-                            .iter()
-                            .any(|workspace| workspace.contains_window(window_id))
-                    })
-                });
+            let triggered_by_managed_window =
+                notification
+                    .triggered_by
+                    .window_id()
+                    .is_some_and(|window_id| {
+                        wm.monitors().iter().any(|monitor| {
+                            monitor
+                                .workspaces()
+                                .iter()
+                                .any(|workspace| workspace.contains_window(window_id))
+                        })
+                    });
 
             if let Some(monitor) = wm.focused_monitor_mut() {
                 let previous_idx = monitor.focused_workspace_idx();
@@ -338,9 +333,9 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 // focusing it is right; not found means someone else's window is coming
                 // to the front and it is not our business to interfere.
                 let manages_trigger = triggered_by_managed_window
-                    && wm
-                        .focused_workspace_mut()
-                        .is_ok_and(|workspace| workspace.focus_container_by_window(window_id).is_ok());
+                    && wm.focused_workspace_mut().is_ok_and(|workspace| {
+                        workspace.focus_container_by_window(window_id).is_ok()
+                    });
 
                 if manages_trigger
                     && let Ok(workspace) = wm.focused_workspace()

@@ -14,9 +14,6 @@ use crate::accessibility::notification_constants::kAXMainWindowChangedNotificati
 use crate::accessibility::notification_constants::kAXUIElementDestroyedNotification;
 use crate::accessibility::notification_constants::kAXWindowCreatedNotification;
 use crate::window::Window;
-use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::sync::LazyLock;
 use crate::window_manager_event::SystemNotification;
 use crate::window_manager_event::WindowManagerEvent;
 use crate::window_manager_event_listener;
@@ -26,9 +23,12 @@ use objc2_core_foundation::CFArray;
 use objc2_core_foundation::CFRetained;
 use objc2_core_foundation::CFRunLoop;
 use objc2_core_foundation::CFString;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use tracing::instrument;
 
 const NOTIFICATIONS: &[&str] = &[
@@ -54,7 +54,6 @@ pub fn forget_application(process_id: i32) {
     crate::accessibility::private::forget_enhanced_ui(process_id);
 }
 
-
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Application {
     element: AccessibilityUiElement,
@@ -72,7 +71,6 @@ unsafe extern "C-unwind" fn application_observer_callback(
 ) {
     unsafe {
         let notification_str = notification.as_ref().to_string();
-
 
         let name =
             AccessibilityApi::copy_attribute_value::<CFString>(element.as_ref(), kAXTitleAttribute)
@@ -164,11 +162,9 @@ impl Application {
             return known.clone();
         }
 
-        let name = AccessibilityApi::copy_attribute_value::<CFString>(
-            &self.element,
-            kAXTitleAttribute,
-        )
-        .map(|s| s.to_string());
+        let name =
+            AccessibilityApi::copy_attribute_value::<CFString>(&self.element, kAXTitleAttribute)
+                .map(|s| s.to_string());
 
         // A miss is worth remembering too: an application that has no name yet is asked
         // over and over otherwise. It is forgotten below when anything about it changes.

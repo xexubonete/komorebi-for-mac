@@ -299,7 +299,9 @@ fn place_in_parallel(to_place: Vec<(Window, Rect)>) {
                 // Held off once for the whole application rather than once per window.
                 // Each placement inside still asks for it, and each of those costs
                 // nothing while this one is alive.
-                let _enhanced_ui = windows.first().map(|(window, _)| window.hold_enhanced_ui_off());
+                let _enhanced_ui = windows
+                    .first()
+                    .map(|(window, _)| window.hold_enhanced_ui_off());
 
                 for (window, rect) in windows {
                     if let Err(error) = window.set_position(rect) {

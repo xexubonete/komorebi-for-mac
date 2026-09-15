@@ -208,7 +208,11 @@ impl Monitor {
     pub fn focus_workspace(&mut self, idx: usize) -> eyre::Result<()> {
         // Every workspace change goes through here, whoever asked for it. Kept at debug:
         // cheap when off, and the first thing worth looking at when navigation misbehaves.
-        tracing::debug!("workspace change {} -> {}", self.focused_workspace_idx(), idx);
+        tracing::debug!(
+            "workspace change {} -> {}",
+            self.focused_workspace_idx(),
+            idx
+        );
 
         // Take the borders down before anything else moves.
         //
@@ -287,8 +291,6 @@ impl Monitor {
 
         let mut stage_layout = std::time::Duration::ZERO;
         let mut stage_focus = std::time::Duration::ZERO;
-        let mut stage_hide = std::time::Duration::ZERO;
-        let mut hidden_windows = 0usize;
 
         let focused_idx = self.focused_workspace_idx();
         let monitor_id = self.id;
@@ -360,9 +362,9 @@ impl Monitor {
             }
         }
 
-        hidden_windows = to_hide.len();
+        let hidden_windows = to_hide.len();
         crate::workspace::hide_in_parallel(to_hide, hiding_position);
-        stage_hide = t.elapsed();
+        let stage_hide = t.elapsed();
 
         tracing::warn!(
             "TIMING workspace-change total={}ms layout={}ms focus={}ms hide={}ms ({} windows hidden)",

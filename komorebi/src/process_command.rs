@@ -146,8 +146,8 @@ impl WindowManager {
         // any_subscriber_filters_state_changes.
         #[allow(clippy::useless_asref)]
         // We don't have From implemented for &mut WindowManager
-        let initial_state = crate::any_subscriber_filters_state_changes()
-            .then(|| State::from(self.as_ref()));
+        let initial_state =
+            crate::any_subscriber_filters_state_changes().then(|| State::from(self.as_ref()));
 
         let stage_snapshot = command_started.elapsed();
         let t = std::time::Instant::now();
@@ -1914,7 +1914,7 @@ impl WindowManager {
 
         // Left for the border thread before the lock is released, so it has everything it
         // needs the moment it wakes rather than queueing for the window manager.
-        border_manager::publish_snapshot(self.as_ref());
+        border_manager::publish_snapshot(self);
         border_manager::send_notification(None, None, false);
 
         let stage_notify = t.elapsed();

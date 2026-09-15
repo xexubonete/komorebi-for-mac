@@ -101,10 +101,7 @@ pub struct EnhancedUiHeldOff<'a> {
     application: &'a AXUIElement,
 }
 
-pub fn hold_enhanced_ui_off(
-    process_id: i32,
-    application: &AXUIElement,
-) -> EnhancedUiHeldOff<'_> {
+pub fn hold_enhanced_ui_off(process_id: i32, application: &AXUIElement) -> EnhancedUiHeldOff<'_> {
     let mut known = ENHANCED_UI.lock();
 
     let state = known.entry(process_id).or_insert_with(|| {
@@ -123,7 +120,10 @@ pub fn hold_enhanced_ui_off(
     state.holders += 1;
     drop(known);
 
-    if outermost && was_on && let Err(error) = set_enhanced_user_interface(application, false) {
+    if outermost
+        && was_on
+        && let Err(error) = set_enhanced_user_interface(application, false)
+    {
         tracing::warn!("could not disable Enhanced User Interface: {error:?}");
     }
 

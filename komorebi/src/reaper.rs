@@ -9,9 +9,9 @@ use crossbeam_channel::Sender;
 use objc2_core_foundation::CFBoolean;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::OnceLock;
 
 pub enum ReaperNotification {
     InvalidWindow(u32),

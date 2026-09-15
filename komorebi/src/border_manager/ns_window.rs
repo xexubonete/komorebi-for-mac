@@ -21,14 +21,14 @@ use objc2_app_kit::NSWindowCollectionBehavior;
 use objc2_app_kit::NSWindowStyleMask;
 use objc2_core_graphics::CGColor;
 use objc2_foundation::NSDictionary;
-use objc2_foundation::NSRect;
 use objc2_foundation::NSNumber;
+use objc2_foundation::NSRect;
 use objc2_foundation::NSString;
 use objc2_quartz_core::CABasicAnimation;
 use objc2_quartz_core::CALayer;
 use objc2_quartz_core::CAMediaTimingFunction;
-use std::ops::Deref;
 use parking_lot::Mutex;
+use std::ops::Deref;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -292,10 +292,6 @@ impl NsWindow {
                         a.setToValue(Some(&NSNumber::new_f64(settled_width)));
                         a
                     }
-
-
-
-
                 };
 
                 let duration = FLASH_DURATION_MS.load(Ordering::Relaxed) as f64 / 1000.0;

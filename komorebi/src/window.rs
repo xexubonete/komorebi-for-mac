@@ -1,4 +1,3 @@
-use std::sync::LazyLock;
 use crate::AccessibilityObserver;
 use crate::AccessibilityUiElement;
 use crate::FLOATING_APPLICATIONS;
@@ -36,6 +35,7 @@ use crate::animation::ANIMATION_DURATION_GLOBAL;
 use crate::animation::ANIMATION_DURATION_PER_ANIMATION;
 use crate::animation::ANIMATION_ENABLED_GLOBAL;
 use crate::animation::ANIMATION_ENABLED_PER_ANIMATION;
+use std::sync::LazyLock;
 
 use crate::accessibility::private::EnhancedUiHeldOff;
 use crate::accessibility::private::with_enhanced_ui_disabled;
@@ -139,7 +139,6 @@ pub fn window_owner_name(window_id: u32) -> Option<String> {
     let list = crate::core_graphics::CoreGraphicsApi::window_list_info()?;
 
     crate::cf_array_as::<objc2_core_foundation::CFDictionary>(&list)
-        .into_iter()
         .map(WindowInfo::new)
         .find(|info| info.window_id == Some(window_id))
         .map(|info| info.owner_name)
@@ -377,10 +376,7 @@ unsafe extern "C-unwind" fn window_observer_callback(
         {
             let mut pid = 0;
             element.as_ref().pid(NonNull::from_mut(&mut pid));
-            tracing::info!(
-                "RAWWIN {} pid={pid}",
-                notification.as_ref().to_string()
-            );
+            tracing::info!("RAWWIN {} pid={pid}", notification.as_ref().to_string());
         }
 
         let name =
@@ -799,7 +795,6 @@ impl Window {
         let mut should_remove_restore_position = false;
         let mut window_restore_positions = WINDOW_RESTORE_POSITIONS.lock();
         if let Some(cg_rect) = window_restore_positions.get(&self.id) {
-
             tracing::debug!(
                 "restoring {:?} to {cg_rect:?}",
                 self.title()
@@ -856,11 +851,9 @@ impl Window {
             return known.clone();
         }
 
-        let title = AccessibilityApi::copy_attribute_value::<CFString>(
-            &self.element,
-            kAXTitleAttribute,
-        )
-        .map(|s| s.to_string());
+        let title =
+            AccessibilityApi::copy_attribute_value::<CFString>(&self.element, kAXTitleAttribute)
+                .map(|s| s.to_string());
 
         // Only a real title is worth remembering. A window that has no title yet is not
         // a window with no title: it is one that has not finished opening, and the answer
@@ -939,11 +932,8 @@ impl Window {
     /// Not the same as a window filling the screen: full screen moves the window onto a
     /// Space of its own, where komorebi has no say over it at all.
     pub fn is_native_fullscreen(&self) -> bool {
-        AccessibilityApi::copy_attribute_value::<CFBoolean>(
-            &self.element,
-            kAXFullScreenAttribute,
-        )
-        .is_some_and(|value| value.as_bool())
+        AccessibilityApi::copy_attribute_value::<CFBoolean>(&self.element, kAXFullScreenAttribute)
+            .is_some_and(|value| value.as_bool())
     }
 
     /// Bring a window back out of the macOS full-screen mode.
@@ -955,11 +945,7 @@ impl Window {
     pub fn leave_native_fullscreen(&self) -> Result<(), AccessibilityError> {
         let cf_boolean = CFBoolean::new(false);
 
-        AccessibilityApi::set_attribute_cf_value(
-            &self.element,
-            kAXFullScreenAttribute,
-            &**cf_boolean,
-        )
+        AccessibilityApi::set_attribute_cf_value(&self.element, kAXFullScreenAttribute, cf_boolean)
     }
 
     pub fn role(&self) -> Option<String> {
@@ -1075,7 +1061,6 @@ impl Window {
             }
         }
 
-
         // Check if animation is enabled (per-animation or global)
         let animation_enabled = {
             let per_animation = ANIMATION_ENABLED_PER_ANIMATION.lock();
@@ -1118,11 +1103,9 @@ impl Window {
 
         // Only ask where it landed while the answer is still unknown. See
         // [`crate::min_size::worth_verifying`].
-        let worth_verifying = application
-            .as_deref()
-            .is_none_or(|application| {
-                crate::min_size::worth_verifying(application, rect.right, rect.bottom)
-            });
+        let worth_verifying = application.as_deref().is_none_or(|application| {
+            crate::min_size::worth_verifying(application, rect.right, rect.bottom)
+        });
 
         if result.is_ok()
             && worth_verifying

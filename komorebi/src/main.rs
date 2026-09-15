@@ -10,12 +10,12 @@ use komorebi::HOME_DIR;
 use komorebi::border_manager;
 use komorebi::core::pathext::replace_env_in_path;
 use komorebi::display_reconfiguration_listener::DisplayReconfigurationListener;
+use komorebi::focus_follows_mouse;
 use komorebi::input_event_listener::InputEventListener;
 use komorebi::monitor_reconciliator;
 use komorebi::notification_center_listener::NotificationCenterListener;
 use komorebi::process_command::listen_for_commands;
 use komorebi::process_event::listen_for_events;
-use komorebi::focus_follows_mouse;
 use komorebi::reaper;
 use komorebi::static_config::StaticConfig;
 use komorebi::theme_manager;
@@ -30,7 +30,6 @@ use objc2_application_services::AXIsProcessTrusted;
 use objc2_core_foundation::CFRunLoop;
 use objc2_core_foundation::kCFRunLoopDefaultMode;
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
-use objc2_core_graphics::CGRequestScreenCaptureAccess;
 use objc2_foundation::NSDate;
 use objc2_foundation::NSDefaultRunLoopMode;
 use parking_lot::Mutex;
@@ -53,7 +52,7 @@ fn check_permissions() -> eyre::Result<()> {
     // fully ready yet. The permission APIs return false even if the user has
     // already granted the permission. Retry a few times before giving up.
     for attempt in 1..=10 {
-        let screen_ok = unsafe { CGPreflightScreenCaptureAccess() };
+        let screen_ok = CGPreflightScreenCaptureAccess();
         let ax_ok = unsafe { AXIsProcessTrusted() };
 
         if screen_ok && ax_ok {

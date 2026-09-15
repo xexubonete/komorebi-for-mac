@@ -122,6 +122,13 @@ lazy_static! {
 }
 
 /// Which animation the border plays when its window takes focus.
+/// What the borders are compared against between passes: per monitor and workspace,
+/// the id and rectangle of every window that has a border.
+///
+/// Distinct from [`BorderSnapshot`], which is the window manager state handed to the
+/// border thread. This is only the geometry the borders themselves depend on.
+type BorderGeometry = Vec<(usize, usize, Vec<(u32, Rect)>)>;
+
 static FLASH_STYLE: Mutex<FlashStyle> = Mutex::new(FlashStyle::Width);
 
 /// Set the focus animation style, from config load or reload.
@@ -137,7 +144,10 @@ pub fn flash_style() -> FlashStyle {
 
 /// Replace the per-application radius overrides, from config load or reload.
 pub fn set_border_radius_rules(rules: HashMap<String, i32>) {
-    tracing::info!("loaded border radius rules for {} applications", rules.len());
+    tracing::info!(
+        "loaded border radius rules for {} applications",
+        rules.len()
+    );
     *BORDER_RADIUS_RULES.lock() = rules;
 }
 
@@ -394,7 +404,7 @@ fn handle_notifications(
     //
     // A border cares about three things: which window is focused, and where each window
     // sits. None of that needs the applications to be asked anything.
-    let mut previous_snapshot: Vec<(usize, usize, Vec<(u32, Rect)>)> = Vec::new();
+    let mut previous_snapshot: BorderGeometry = Vec::new();
     let mut previous_pending_move_op = None;
     let mut previous_is_paused = false;
     let mut previous_notification: Option<Notification> = None;
@@ -463,7 +473,7 @@ fn handle_notifications(
         let (
             is_paused,
             focused_monitor_idx,
-            focused_workspace_idx,
+            _focused_workspace_idx,
             monitors,
             pending_move_op,
             floating_window_hwnds,
@@ -536,8 +546,8 @@ fn handle_notifications(
             foreground_lost_since = None;
         }
 
-        let foreground_lost_long_enough = foreground_lost_since
-            .is_some_and(|since| since.elapsed() >= FOREGROUND_LOST_GRACE);
+        let foreground_lost_long_enough =
+            foreground_lost_since.is_some_and(|since| since.elapsed() >= FOREGROUND_LOST_GRACE);
 
         // DIAGNOSTIC: which window the border manager believes is in front, and whether
         // it counts as one of ours.
@@ -573,7 +583,7 @@ fn handle_notifications(
         // released as soon as the values above have been read out of it.
 
         // The fingerprint for this pass, built from the snapshot already in hand.
-        let snapshot: Vec<(usize, usize, Vec<(u32, Rect)>)> = monitors
+        let snapshot: BorderGeometry = monitors
             .elements()
             .iter()
             .map(|monitor| {

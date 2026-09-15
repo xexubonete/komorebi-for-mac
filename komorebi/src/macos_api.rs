@@ -24,10 +24,10 @@ use color_eyre::eyre;
 use color_eyre::eyre::OptionExt;
 use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
+use objc2_app_kit::NSApplicationActivationPolicy;
 use objc2_app_kit::NSDeviceDescriptionKey;
 use objc2_app_kit::NSEvent;
 use objc2_app_kit::NSScreen;
-use objc2_app_kit::NSApplicationActivationPolicy;
 use objc2_app_kit::NSWorkspace;
 use objc2_application_services::AXUIElement;
 use objc2_application_services::AXValue;
@@ -472,7 +472,9 @@ impl MacosApi {
                 } else {
                     // At debug: these are dozens of tiny system windows -- menu bar
                     // icons, mostly -- and they say nothing useful.
-                    tracing::debug!("SKIP {raw_owner:?} does not pass the initial filter {raw_bounds:?}");
+                    tracing::debug!(
+                        "SKIP {raw_owner:?} does not pass the initial filter {raw_bounds:?}"
+                    );
                 }
             }
 
@@ -512,15 +514,13 @@ impl MacosApi {
 
                 // usize::MAX as the remembered slot means "no opinion": the window was
                 // not in the session, so it goes on the end like it always did.
-                let selected = session
-                    .as_ref()
-                    .is_some_and(|s| {
-                        s.windows.iter().any(|w| {
-                            w.selected
-                                && ((s.ids_are_current && w.window_id == window.id && w.exe == exe)
-                                    || (!title.is_empty() && w.exe == exe && w.title == title))
-                        })
-                    });
+                let selected = session.as_ref().is_some_and(|s| {
+                    s.windows.iter().any(|w| {
+                        w.selected
+                            && ((s.ids_are_current && w.window_id == window.id && w.exe == exe)
+                                || (!title.is_empty() && w.exe == exe && w.title == title))
+                    })
+                });
 
                 let (target_monitor, target_ws, target_slot) = session
                     .as_mut()
@@ -533,7 +533,11 @@ impl MacosApi {
                 tracing::debug!(
                     "STARTUP window {} ({exe:?}, {title:?}) -> monitor {target_monitor} workspace {target_ws} slot {target_slot} {}",
                     window.id,
-                    if target_slot == usize::MAX { "(NOT in session)" } else { "(from session)" }
+                    if target_slot == usize::MAX {
+                        "(NOT in session)"
+                    } else {
+                        "(from session)"
+                    }
                 );
 
                 let mut container = Container::default();
@@ -593,14 +597,14 @@ impl MacosApi {
         // in process_event AFTER init completes. pending_session lets
         // process_event place those windows in their remembered workspace
         // instead of the focused one.
-        if let Some(s) = session {
-            if !s.windows.is_empty() {
-                tracing::info!(
-                    "{} session entries pending (apps not yet started)",
-                    s.windows.len()
-                );
-                wm.pending_session = Some(s);
-            }
+        if let Some(s) = session
+            && !s.windows.is_empty()
+        {
+            tracing::info!(
+                "{} session entries pending (apps not yet started)",
+                s.windows.len()
+            );
+            wm.pending_session = Some(s);
         }
 
         Ok(())
@@ -704,7 +708,6 @@ impl MacosApi {
 
     pub fn activate_finder() {
         use objc2_app_kit::NSApplicationActivationOptions;
-
 
         DispatchQueue::main().exec_sync(move || {
             let workspace = NSWorkspace::sharedWorkspace();
