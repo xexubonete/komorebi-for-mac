@@ -207,11 +207,17 @@ reads `.zshrc`. Without that, a shortcut can resolve to a different `komorebic`.
 System Settings → Privacy & Security, and add the `komorebi` binary to **both**:
 
 - **Accessibility** — required. komorebi refuses to start without it.
-- **Screen Recording** — needed to read window titles. Without it komorebi still runs,
-  but titles are unavailable, so any rule that matches on a title stops working.
+- **Screen Recording** — needed to read window titles, and therefore by every rule that
+  matches on one.
 
-Neither is requested with a dialog: this branch only checks, retrying for twenty seconds
-to cover a LaunchAgent starting before the WindowServer is ready. Grant them by hand.
+**komorebi asks for both, and refuses to start without them.** Upstream only prompts for
+Screen Recording; this branch prompts for Accessibility too, and treats a missing
+permission as fatal rather than starting an environment that looks alive and misbehaves.
+
+Before prompting it retries for twenty seconds, because a LaunchAgent can start before the
+WindowServer is ready and the permission APIs report `false` even when the answer is yes.
+The dialogs only appear once per machine — a stable code signature (step 2) is what keeps
+macOS remembering the answer across rebuilds.
 
 ---
 

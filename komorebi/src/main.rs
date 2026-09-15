@@ -27,13 +27,20 @@ use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSApplication;
 use objc2_app_kit::NSEventMask;
 use objc2_application_services::AXIsProcessTrusted;
+use objc2_application_services::AXIsProcessTrustedWithOptions;
+use objc2_application_services::kAXTrustedCheckOptionPrompt;
+use objc2_core_foundation::CFBoolean;
+use objc2_core_foundation::CFDictionary;
 use objc2_core_foundation::CFRunLoop;
+use objc2_core_foundation::CFString;
 use objc2_core_foundation::kCFRunLoopDefaultMode;
 use objc2_core_graphics::CGPreflightScreenCaptureAccess;
+use objc2_core_graphics::CGRequestScreenCaptureAccess;
 use objc2_foundation::NSDate;
 use objc2_foundation::NSDefaultRunLoopMode;
 use parking_lot::Mutex;
 use serde::Deserialize;
+use std::ffi::c_void;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -67,20 +74,74 @@ fn check_permissions() -> eyre::Result<()> {
             std::thread::sleep(std::time::Duration::from_secs(2));
             continue;
         }
+    }
 
-        if !ax_ok {
-            eyre::bail!("komorebi needs to be added as a trusted accessibility process");
-        }
+    // Out of retries, so this is a genuinely missing permission rather than a
+    // WindowServer that had not caught up. Ask for it: on a machine that has never
+    // granted it there is nobody to tell, and komorebi starting anyway produces an
+    // environment that looks alive and misbehaves -- no window titles, so every rule
+    // that matches on one silently stops applying.
+    //
+    // Both dialogs only ever appear once per machine. macOS remembers the answer, and
+    // a stable code signature is what keeps it remembered across rebuilds.
+    request_permissions()
+}
 
-        if !screen_ok {
-            tracing::warn!(
-                "screen recording permission not granted — window titles may be unavailable. \
-                 Grant it in System Settings → Privacy & Security → Screen Recording"
-            );
+/// Prompt for whatever is still missing, then refuse to start without it.
+fn request_permissions() -> eyre::Result<()> {
+    let mut missing: Vec<&str> = Vec::new();
+
+    if !CGPreflightScreenCaptureAccess() {
+        // Shows the system dialog and returns whether it ended up granted.
+        if !CGRequestScreenCaptureAccess() {
+            missing.push("Screen Recording (needed to read window titles)");
         }
     }
 
-    Ok(())
+    if !unsafe { AXIsProcessTrusted() } {
+        // Prompting here is asynchronous and does not change the return value, so the
+        // dialog goes up and the answer is still whatever it was a moment ago. That is
+        // the point: it tells the user what to do, and komorebi refuses to run until
+        // they have done it.
+        let key: *const c_void =
+            unsafe { kAXTrustedCheckOptionPrompt } as *const CFString as *const c_void;
+        let value = CFBoolean::new(true);
+        let value_ptr: *const c_void = (&raw const *value).cast::<c_void>();
+
+        let mut keys = [key];
+        let mut values = [value_ptr];
+
+        let options = unsafe {
+            CFDictionary::new(
+                None,
+                keys.as_mut_ptr(),
+                values.as_mut_ptr(),
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+
+        let trusted = match options {
+            Some(options) => unsafe { AXIsProcessTrustedWithOptions(Some(&options)) },
+            // No dictionary means no prompt, but the check still has to happen.
+            None => unsafe { AXIsProcessTrusted() },
+        };
+
+        if !trusted {
+            missing.push("Accessibility (needed to move and resize windows)");
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    eyre::bail!(
+        "komorebi cannot run without these permissions: {}. \
+         Grant them in System Settings -> Privacy & Security, then start komorebi again.",
+        missing.join(", ")
+    )
 }
 
 fn setup(log_level: LogLevel) -> eyre::Result<(WorkerGuard, WorkerGuard)> {
