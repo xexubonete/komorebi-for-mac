@@ -518,9 +518,12 @@ pub struct StaticConfig {
     pub border_radius: Option<i32>,
     /// Animation played by the border when its window takes focus.
     ///
-    /// One of: width (flares wide and settles), pulse (two quick beats), fade (fades
-    /// up), scale (starts oversized and snaps in), glow (ignites near-white and cools),
-    /// none.
+    /// One of: width (flares wide and settles back), none.
+    ///
+    /// Opacity, scale, colour and pulse variants were implemented and removed. The
+    /// border layer sits inside a transparent window with implicit actions disabled,
+    /// so only its border width actually redraws: they animated correctly and were
+    /// invisible, which is worse than offering them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub border_flash_style: Option<border_manager::FlashStyle>,
     /// How far the border flares during the focus flash, as a multiple of its width.

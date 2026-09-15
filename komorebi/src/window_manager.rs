@@ -95,7 +95,7 @@ impl WindowManager {
     /// Mark the focused window as the one the user is acting on.
     ///
     /// Opening a window is not the only way to trigger a relocation: moving one into a
-    /// workspace can push a window already there below its minimum width. Either way the
+    /// workspace can push a window already there below its minimum size. Either way the
     /// user has a window in mind, and focus should end up on it rather than on whatever
     /// got shuffled aside. Called from the command handlers, so komorebi's own internal
     /// moves -- including the relocation itself -- never claim to be user intent.
@@ -1054,7 +1054,7 @@ impl WindowManager {
         for _ in 0..MAX_RELOCATIONS_PER_PASS {
             let pinned = self.user_placed_window();
 
-            let candidate = match self.window_needing_more_width()? {
+            let candidate = match self.window_needing_more_room()? {
                 Some(candidate) => Some(candidate),
                 // Nothing movable is short of width. If the window the user placed here
                 // is the one that does not fit, evict a neighbour to widen the columns
@@ -1287,11 +1287,15 @@ impl WindowManager {
         Ok(())
     }
 
-    /// The window furthest below its minimum width, as (container, app, minimum).
+    /// The window furthest below its minimum size, as (container, app, minimum width).
+    ///
+    /// Width and height both count: a window can fit its column and still be too tall
+    /// for the cell. Ranking is by minimum width, because that is what decides where it
+    /// can go.
     ///
     /// The greediest one goes first on purpose: it is the hardest to satisfy, and
     /// moving it frees the most room for the rest.
-    fn window_needing_more_width(&self) -> eyre::Result<Option<(usize, String, i32)>> {
+    fn window_needing_more_room(&self) -> eyre::Result<Option<(usize, String, i32)>> {
         let workspace = self.focused_workspace()?;
         let pinned = self.user_placed_window();
         let mut worst: Option<(usize, String, i32)> = None;
@@ -1363,9 +1367,7 @@ impl WindowManager {
                     .iter()
                     .flat_map(|container| container.windows().iter())
                     .filter_map(|window| window.application.name())
-                    .filter(|application| {
-                        crate::min_size::get(application).unwrap_or(0) == minimum
-                    })
+                    .filter(|application| crate::min_size::get(application).unwrap_or(0) == minimum)
                     .filter_map(|application| crate::min_size::get_height(&application))
                     .max()
             })

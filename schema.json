@@ -45,6 +45,40 @@
         }
       ]
     },
+    "border_flash_duration_ms": {
+      "description": "How long the focus flash lasts, in milliseconds.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "int32"
+    },
+    "border_flash_easing": {
+      "description": "Timing curve of the focus flash: easeOut, easeIn, easeInEaseOut or linear.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "border_flash_factor": {
+      "description": "How far the border flares during the focus flash, as a multiple of its width.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "float"
+    },
+    "border_flash_style": {
+      "description": "Animation played by the border when its window takes focus.\n\nOne of: width (flares wide and settles back), none.\n\nOpacity, scale, colour and pulse variants were implemented and removed. The\nborder layer sits inside a transparent window with implicit actions disabled,\nso only its border width actually redraws: they animated correctly and were\ninvisible, which is worse than offering them.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FlashStyle"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "border_offset": {
       "description": "Offset of window borders",
       "type": [
@@ -62,6 +96,17 @@
       ],
       "format": "int32",
       "default": 10
+    },
+    "border_radius_rules": {
+      "description": "Per-application border radius overrides, keyed by application name.\n\nWindows are not all rounded the same: Apple's own applications use the system\nframe, while apps that draw their own -- anything built on Electron, and\nterminals with custom chrome -- pick their own radius. macOS exposes no way to\nask a window what its radius is, so the exceptions are listed here.\n\nExample: { \"Discord\": 14, \"WhatsApp\": 14 }",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "integer",
+        "format": "int32"
+      }
     },
     "border_width": {
       "description": "Width of window borders",
@@ -252,6 +297,18 @@
       "items": {
         "$ref": "#/$defs/MonitorConfig"
       }
+    },
+    "monocle_focus_behaviour": {
+      "description": "Determine what happens when focusing in a direction while a monocle container is active",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MonocleFocusBehaviour"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": "NoOp"
     },
     "mouse_follows_focus": {
       "description": "Enable or disable mouse follows focus",
@@ -2502,6 +2559,21 @@
         }
       ]
     },
+    "FlashStyle": {
+      "description": "How the border announces that its window has taken focus.",
+      "oneOf": [
+        {
+          "description": "Flares wide and settles back.\n\nThe only style kept. Opacity, scale and colour were tried as well and none of\nthem reach the screen: the border layer sits inside a transparent window with\nimplicit actions disabled, and only its border width actually redraws. They\nanimated correctly and were invisible, which is worse than not offering them.",
+          "type": "string",
+          "const": "width"
+        },
+        {
+          "description": "No animation.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
     "FloatingLayerBehaviour": {
       "description": "Floating layer behaviour when a new window is opened",
       "oneOf": [
@@ -3165,6 +3237,21 @@
       },
       "required": [
         "workspaces"
+      ]
+    },
+    "MonocleFocusBehaviour": {
+      "description": "Behaviour when focusing in a direction while a monocle container is active",
+      "oneOf": [
+        {
+          "description": "Cycle the monocle container to the next/previous container in the workspace",
+          "type": "string",
+          "const": "Cycle"
+        },
+        {
+          "description": "Do nothing, allowing focus to fall through to cross-monitor logic",
+          "type": "string",
+          "const": "NoOp"
+        }
       ]
     },
     "MoveBehaviour": {

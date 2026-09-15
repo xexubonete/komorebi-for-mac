@@ -68,17 +68,19 @@ pub struct SessionWindow {
 }
 
 impl SessionState {
-    /// Finds the remembered (monitor, workspace) for a window and consumes the
-    /// entry (so two windows can't claim the same one). Priority:
-    ///   1. window id + app  → exact, the rset case (apps still alive).
-    ///   2. app + title      → best-effort, the logout/login case (new ids).
-    /// Requiring the app to match avoids misplacing a window if a new id
-    /// collides by chance with an old one from a different app.
     /// Where the user was when this was written.
     pub fn focused(&self) -> (usize, usize) {
         (self.focused_monitor, self.focused_workspace)
     }
 
+    /// Finds the remembered (monitor, workspace) for a window and consumes the
+    /// entry, so two windows can't claim the same one. Priority:
+    ///
+    /// 1. window id + app -- exact, the `rset` case (apps still alive).
+    /// 2. app + title -- best-effort, the logout/login case (new ids).
+    ///
+    /// Requiring the app to match avoids misplacing a window if a new id
+    /// collides by chance with an old one from a different app.
     pub fn take_match(
         &mut self,
         window_id: u32,
@@ -234,7 +236,6 @@ pub fn save(wm: &WindowManager) {
     if state.windows.is_empty() {
         return;
     }
-
 
     let json = match serde_json::to_string_pretty(&state) {
         Ok(json) => json,
