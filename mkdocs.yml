@@ -204,6 +204,8 @@ nav:
       - cli/animation-style.md
       - cli/mouse-follows-focus.md
       - cli/toggle-mouse-follows-focus.md
+      - cli/focus-follows-mouse.md
+      - cli/toggle-focus-follows-mouse.md
       - cli/fetch-app-specific-configuration.md
       - cli/application-specific-configuration-schema.md
       - cli/notification-schema.md

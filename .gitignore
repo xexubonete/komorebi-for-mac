@@ -5,3 +5,6 @@
 /komorebic/applications.json
 /komorebi-schema
 /bar-schema
+
+# macOS
+.DS_Store

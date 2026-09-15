@@ -64,8 +64,8 @@ by macOS — which would take window dragging, resizing and reaping down with it
 **This is a runtime toggle, not a config key:**
 
 ```sh
-komorebic focus-follows-mouse on
-komorebic focus-follows-mouse off
+komorebic focus-follows-mouse enable
+komorebic focus-follows-mouse disable
 komorebic toggle-focus-follows-mouse
 ```
 
@@ -204,7 +204,14 @@ reads `.zshrc`. Without that, a shortcut can resolve to a different `komorebic`.
 
 ### 4. Grant permissions
 
-System Settings → Privacy & Security → **Accessibility**, and add the `komorebi` binary.
+System Settings → Privacy & Security, and add the `komorebi` binary to **both**:
+
+- **Accessibility** — required. komorebi refuses to start without it.
+- **Screen Recording** — needed to read window titles. Without it komorebi still runs,
+  but titles are unavailable, so any rule that matches on a title stops working.
+
+Neither is requested with a dialog: this branch only checks, retrying for twenty seconds
+to cover a LaunchAgent starting before the WindowServer is ready. Grant them by hand.
 
 ---
 
