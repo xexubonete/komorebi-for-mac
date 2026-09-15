@@ -1,321 +1,282 @@
-# komorebi for Mac
-
-Tiling Window Management for macOS.
-
-<p>
-  <a href="https://techforpalestine.org/learn-more">
-    <img alt="Tech for Palestine" src="https://badge.techforpalestine.org/default">
-  </a>
-
-[//]: # '  <img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/LGUG2Z/komorebi-for-mac/.github/workflows/windows.yaml">'
-[//]: # '  <img alt="GitHub all releases" src="https://img.shields.io/github/downloads/LGUG2Z/komorebi-for-mac/total">'
-[//]: # '  <img alt="GitHub commits since latest release (by date) for a branch" src="https://img.shields.io/github/commits-since/LGUG2Z/komorebi-for-mac/latest">'
-
-  <img alt="Active Individual Commercial Use Licenses" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Flgug2z-ecstaticmagentacheetah.web.val.run&query=%24.&label=active%20individual%20commercial%20use%20licenses&cacheSeconds=3600&link=https%3A%2F%2Flgug2z.com%2Fsoftware%2Fkomorebi">
-
-  <a href="https://discord.gg/mGkn66PHkx">
-    <img alt="Discord" src="https://img.shields.io/discord/898554690126630914">
-  </a>
-  <a href="https://github.com/sponsors/LGUG2Z">
-    <img alt="GitHub Sponsors" src="https://img.shields.io/github/sponsors/LGUG2Z">
-  </a>
-  <a href="https://ko-fi.com/lgug2z">
-    <img alt="Ko-fi" src="https://img.shields.io/badge/kofi-tip-green">
-  </a>
-  <a href="https://notado.app/feeds/jado/software-development">
-    <img alt="Notado Feed" src="https://img.shields.io/badge/Notado-Subscribe-informational">
-  </a>
-  <a href="https://www.youtube.com/channel/UCeai3-do-9O4MNy9_xjO6mg?sub_confirmation=1">
-    <img alt="YouTube" src="https://img.shields.io/youtube/channel/subscribers/UCeai3-do-9O4MNy9_xjO6mg">
-  </a>
-</p>
-
-<img width="2560" height="1080" alt="Screenshot 2025-10-06 at 3 55 50 PM" src="https://github.com/user-attachments/assets/93ee9c94-2df6-4211-9f8a-db34e3c0a604" />
-
-## Overview
-
-_komorebi for Mac_ is a tiling window manager that works as an extension to the
-standard macOS desktop environment.
-
-_komorebi for Mac_ aims to make _as few modifications as possible_ to the
-operating system and desktop environment by default.
-
-[LGUG2Z/komorebi-for-mac](https://github.com/LGUG2Z/komorebi-for-mac) is the
-public repository where versioned releases will be published.
-
-[KomoCorp/komorebi-for-mac](https://github.com/KomoCorp/komorebi-for-mac) is the
-private repository available to certain GitHub Sponsors tiers where ongoing
-development work happens and nightly releases are made available.
-
-You can try the latest public release with `brew install
-lgug2z/tap/komorebi-for-mac` or [build from
-source](https://komorebi-starlight.lgug2z.workers.dev/guides/installation/#building-from-source),
-and then follow the
-[quickstart](https://komorebi-starlight.lgug2z.workers.dev/guides/quickstart/).
-
-## Community
-
-There is a [Discord server](https://discord.gg/mGkn66PHkx) available for
-_komorebi_-related discussion, help, troubleshooting etc. If you have any
-specific feature requests or bugs to report, please create an issue in this
-repository.
-
-There is
-a [YouTube channel](https://www.youtube.com/channel/UCeai3-do-9O4MNy9_xjO6mg)
-where I post _komorebi_ development videos, feature previews and release
-overviews. Subscribing to the channel (which is monetized as part of the YouTube
-Partner Program) and watching videos is a really simple and passive way to
-contribute financially to the development and maintenance of _komorebi_.
-
-There is an [Awesome List](https://github.com/LGUG2Z/awesome-komorebi) which
-showcases the many awesome projects that exist in the _komorebi_ ecosystem.
-
-## Licensing for Personal Use
-
-`komorebi`
-is [educational source software](https://lgug2z.com/articles/educational-source-software/).
-
-`komorebi` is licensed under
-the [Komorebi 2.0.0 license](https://github.com/LGUG2Z/komorebi-license), which
-is a fork of
-the [PolyForm Strict 1.0.0 license](https://polyformproject.org/licenses/strict/1.0.0).
-On a high level this means that you are free to do whatever you want with
-`komorebi` for personal use other than redistribution, or distribution of new
-works (i.e. hard-forks) based on the software.
-
-Anyone is free to make their own fork of `komorebi` with changes intended either
-for personal use or for integration back upstream via pull requests.
-
-The [Komorebi 2.0.0 License](https://github.com/LGUG2Z/komorebi-license) does
-not permit any kind of commercial use ( i.e. using `komorebi` at work).
-
-## Sponsorship for Personal Use
-
-_komorebi for Mac_ is a free and educational source project, and one that
-encourages you to make charitable donations if you find the software to be
-useful and have the financial means.
-
-I encourage you to make a charitable donation to
-the [Palestine Children's Relief Fund](https://pcrf1.app.neoncrm.com/forms/gaza-recovery)
-or to contribute to a [Gaza Funds campaign](https://gazafunds.com) before you
-consider sponsoring me on GitHub.
-
-[GitHub Sponsors is enabled for this project](https://github.com/sponsors/LGUG2Z).
-Sponsors can claim custom roles on the Discord server, get shout outs at the end
-of _komorebi_-related videos on YouTube, gain the ability to submit feature
-requests on the issue tracker, and receive releases of komorebi with "easter
-eggs" on physical media.
-
-If you would like to tip or sponsor the project but are unable to use GitHub
-Sponsors, you may also sponsor through [Ko-fi](https://ko-fi.com/lgug2z), or
-make an anonymous Bitcoin donation to
-`bc1qv73wzspc77k46uty4vp85x8sdp24mphvm58f6q`.
-
-## Licensing for Commercial Use
-
-A dedicated Individual Commercial Use License is available for those who want to
-use `komorebi` at work.
-
-The Individual Commerical Use License adds “Commercial Use” as a “Permitted Use”
-for the licensed individual only, for the duration of a valid paid license
-subscription only. All provisions and restrictions enumerated in the [Komorebi
-License](https://github.com/LGUG2Z/komorebi-license) continue to apply.
-
-More information, pricing and purchase links for Individual Commercial Use
-Licenses [can be found here](https://lgug2z.com/software/komorebi).
-
-# Contribution Guidelines
-
-_komorebi for Mac_ is currently accepting minimally invasive bug fixes.
-Proposals for any other kind of contributions can be discussed with me on
-Discord.
-
-If you would like to contribute to `komorebi` please take the time to carefully
-read the guidelines below.
-
-Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for more information about how
-code contributions to `komorebi` are licensed.
-
-## Commit hygiene
-
-- Flatten all `use` statements
-- Run `cargo +stable clippy` and ensure that all lints and suggestions have been
-  addressed before committing
-- Run `cargo +nightly fmt --all` to ensure consistent formatting before
-  committing
-- Use `git cz` with
-  the [Commitizen CLI](https://github.com/commitizen/cz-cli#conventional-commit-messages-as-a-global-utility)
-  to prepare commit messages
-- Provide **at least** one short sentence or paragraph in your commit message
-  body to describe your thought process for
-  the changes being committed
-
-## PRs should contain only a single feature or bug fix
-
-It is very difficult to review pull requests which touch multiple unrelated
-features and parts of the codebase.
-
-Please do not submit pull requests like this; you will be asked to separate them
-into smaller PRs that deal only with one feature or bug fix at a time.
-
-If you are working on multiple features and bug fixes, I suggest that you cut a
-branch called `local-trunk` from `master` which you keep up to date, and rebase
-the various independent branches you are working on onto that branch if you want
-to test them together or create a build with everything integrated.
-
-## Refactors to the codebase must have prior approval
-
-`komorebi` is a mature codebase with an internal consistency and structure that
-has developed organically over close to half a decade.
-
-There are [countless hours of live coding videos](https://youtube.com/@LGUG2Z)
-demonstrating work on this project and showing new contributors how to do
-everything from basic tasks like implementing new `komorebic` commands to
-distinguishing monitors by manufacturer hardware identifiers and video card
-ports.
-
-Refactors to the structure of the codebase are not taken lightly and require
-prior discussion and approval.
-
-Please do not start refactoring the codebase with the expectation of having your
-changes integrated until you receive an explicit approval or a request to do so.
-
-Similarly, when implementing features and bug fixes, please stick to the
-structure of the codebase as much as possible and do not take this as an
-opportunity to do some "refactoring along the way".
-
-It is extremely difficult to review PRs for features and bug fixes if they are
-lost in sweeping changes to the structure of the codebase.
-
-## Breaking changes to user-facing interfaces are unacceptable
-
-This includes but is not limited to:
-
-- All `komorebic` commands
-- The `komorebi.json` schema
-- The [
-  `komorebi-application-specific-configuration`](https://github.com/LGUG2Z/komorebi-application-specific-configuration)
-  schema
-
-No user should ever find that their configuration file has stopped working after
-upgrading to a new version of `komorebi`.
-
-More often than not there are ways to reformulate changes that may initially
-seem like they require breaking user-facing interfaces into additive changes.
-
-For some inspiration please take a look
-at [this commit](https://github.com/LGUG2Z/komorebi/commit/e7d928a065eb63bb4ea1fb864c69c1cae8cc763b)
-which added the ability for users to specify colours in `komorebi.json` in Hex
-format alongside RGB.
-
-There is also a process in place for graceful, non-breaking, deprecation of
-configuration options that are no longer required.
-
-# Logs and Debugging
-
-Logs from `komorebi` will be appended to
-`$HOME/Library/Application Support/komorebi/komorebi.log.$timestamp`.
-
-Whenever running the `komorebic stop` command or sending a Ctrl-C signal to
-`komorebi` directly, the `komorebi` process ensures that all hidden windows are
-restored before termination.
-
-## Panics and Deadlocks
-
-If `komorebi` ever stops responding, it is most likely either due to either a
-panic or a deadlock. In the case of a panic, this will be reported in the log.
-In the case of a deadlock, there will not be any errors in the log, but the
-process and the log will appear frozen.
-
-If you believe you have encountered a deadlock, you can compile `komorebi` with
-`--features deadlock_detection` and try reproducing the deadlock again. This
-will check for deadlocks every 5 seconds in the background, and if a deadlock is
-found, information about it will appear in the log which can be shared when
-opening an issue.
-
-# Window Manager State and Integrations
-
-The current state of the window manager can be queried using the
-`komorebic state` command, which returns a JSON representation of the `State`
-struct.
-
-This may also be polled to build further integrations and widgets on top of.
-
-# Window Manager Event Subscriptions
-
-## Unix Domain Sockets
-
-It is possible to subscribe to notifications of every `WindowManagerEvent` and
-`SocketMessage` handled by `komorebi` using Unix Domain Sockets.
-
-UDS are also the only mode of communication between `komorebi` and `komorebic`.
-
-First, your application must create a socket in `$HOME/Library/Application
-Support/komorebi`. Once the socket has been created, run the following command:
-
-```bash
-komorebic subscribe-socket <your socket name>
+# komorebi for Mac — `mac-tweaks`
+
+Tiling window management for macOS. **This is a personal fork**, not the original.
+
+> **Upstream:** [LGUG2Z/komorebi-for-mac](https://github.com/LGUG2Z/komorebi-for-mac)
+> **This fork:** [xexubonete/komorebi-for-mac](https://github.com/xexubonete/komorebi-for-mac), branch `mac-tweaks`
+>
+> All the credit for komorebi belongs to [LGUG2Z](https://github.com/LGUG2Z). What follows
+> documents only what this branch adds on top. For the project itself — what it is, how
+> tiling works, the community, and **the licensing terms, which are unchanged and still
+> apply** — read the [upstream README](https://github.com/LGUG2Z/komorebi-for-mac#readme)
+> and [`LICENSE.md`](LICENSE.md).
+
+`mac-tweaks` sits about 50 commits ahead of `upstream/master`, across roughly 4,700 lines.
+It is a daily driver, not a proposal: everything here exists because something misbehaved
+on a real desk with a laptop screen and an external monitor.
+
+---
+
+## What this branch adds
+
+### Windows stay where you put them
+
+- **Session persistence.** The window→workspace map is written to disk, so restarting
+  komorebi while the apps stay alive (`rset`) puts every window back on its own workspace.
+  Windows are matched by Accessibility id first, then by app name plus title — the second
+  is what survives a logout or a reboot with *"reopen windows when logging back in"*.
+- **The session is keyed to the boot UUID**, so after a real reboot — where macOS reassigns
+  every window id — komorebi doesn't restore a map that no longer means anything.
+- **Screen lock no longer destroys the layout.** A locked screen reports no windows; the
+  original read that as "every window closed" and reaped them all. The session file is now
+  held through a lock and the latch lifts only once the model is whole again.
+- **Startup pulls windows out of macOS full screen** before enumerating them, instead of
+  leaving them in a space komorebi can't reach.
+
+### Windows that refuse to be resized
+
+Some applications will not shrink below a size of their own choosing. The Accessibility
+call succeeds, the window keeps its size, and it overlaps whatever sits next to it.
+
+- **Minimum sizes are learned once and remembered on disk**, per application and in both
+  dimensions. Measured here: WhatsApp and Música refuse to go below ~600 points tall and
+  hold widths near 1000; Mail refuses widths in the 750s.
+- **A window that cannot fit its cell is relocated** to a workspace with room, rather than
+  left overlapping its neighbours.
+- What is stored is the *cause* (this app will not go below N points), not the situation
+  it broke in — so nothing is relearned when a different monitor is plugged in.
+
+### Focus follows mouse
+
+Moving the cursor **onto** a window focuses it.
+
+The distinction matters: an earlier version focused whatever the cursor was *over*, every
+tenth of a second, which overruled everything else — typing into a launcher stopped
+working, because the cursor was resting over another window and focus was pulled away
+mid-word. A cursor that has not moved is not asking for anything, so Cmd+Tab, launchers
+and workspace changes keep what they chose.
+
+It is implemented by polling the cursor position, deliberately, rather than by adding
+`MouseMoved` to the existing `CGEventTap`: that tap is an active one, mouse movement
+arrives up to 120 times a second, and a callback that takes too long gets the tap disabled
+by macOS — which would take window dragging, resizing and reaping down with it.
+
+**This is a runtime toggle, not a config key:**
+
+```sh
+komorebic focus-follows-mouse on
+komorebic focus-follows-mouse off
+komorebic toggle-focus-follows-mouse
 ```
 
-If the socket exists, komorebi will start pushing JSON data of successfully
-handled events and messages as in the example above in the Named Pipes section.
+Bind it in `~/.skhdrc` if you want it on a key:
 
-## Rust Client
+```
+ctrl + shift - m : komorebic toggle-focus-follows-mouse
+```
 
-It is possible to use the `komorebi-client` crate to subscribe to notifications
-of every `WindowManagerEvent` and `SocketMessage` handled by `komorebi` in a
-Rust codebase.
+### Borders
 
-Below is a simple example of how to use `komorebi-client` in a basic Rust application.
+- **Only the focused window draws a border.** Unfocused windows, and windows komorebi
+  doesn't manage, draw nothing.
+- **The border flashes when a window takes focus**, with configurable width, duration and
+  timing curve (see below).
+- **Per-application corner radius.** Windows are not all rounded the same: Apple's own apps
+  use the system frame, while anything built on Electron, or a terminal with custom chrome,
+  picks its own radius. macOS exposes no way to ask a window what its radius is, so the
+  exceptions are listed in config.
+- **The border is redrawn when something other than komorebi moves a window**, so it no
+  longer trails behind after a manual drag.
 
-```rust
-// komorebi-client = { git = "https://github.com/LGUG2Z/komorebi-for-mac" }
+### Speed
 
-use anyhow::Result;
-use komorebi_client::Notification;
-use komorebi_client::NotificationEvent;
-use komorebi_client::UnixListener;
-use komorebi_client::WindowManagerEvent;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::io::Read;
+The whole point of these was a workspace change that felt slow.
 
-pub fn main() -> anyhow::Result<()> {
-  let socket = komorebi_client::subscribe(NAME)?;
+- **Windows are placed in parallel**, one thread per application. One slow app no longer
+  defines the cost of the whole workspace.
+- **Thread quality of service is declared**, so the threads placing windows are scheduled
+  as user-interactive. macOS propagates QoS across synchronous IPC, so the Accessibility
+  call inherits that priority *inside the other application's process* too.
+- **Window positions, titles and application names are cached** instead of being asked for
+  on every placement.
+- **A window already in the right place is skipped**, and refusals are reported rather than
+  silently swallowed.
+- **The screen is held still across a whole workspace change**, and borders come down as it
+  starts rather than after it.
+- **Reconciliation the user has already navigated past is dropped**, instead of being
+  applied late.
+- **The state snapshot is only built when something is subscribed to it.**
 
-  for incoming in socket.incoming() {
-    match incoming {
-      Ok(data) => {
-        let reader = BufReader::new(data.try_clone()?);
+### Correctness fixes
 
-        for line in reader.lines().flatten() {
-          let notification: Notification = match serde_json::from_str(&line) {
-            Ok(notification) => notification,
-            Err(error) => {
-              log::debug!("discarding malformed komorebi notification: {error}");
-              continue;
-            }
-          };
+- The global work area offset is applied on **every** layout path. Two paths disagreeing by
+  the offset meant 98% of placements resized every window, and the next pass resized it
+  back — for two points of difference.
+- Workspaces are capped to the configured count **without losing the windows on them**.
+- Closing a window no longer drags focus to another workspace.
+- Windows with no title yet are managed (if they are standard windows), instead of being
+  dropped before the checks run.
+- Windows that declare no subrole are left out of the grid.
+- Hidden windows are parked *beside* the screen rather than below it.
+- Windows are never reaped while the screen is covered.
 
-          // match and filter on desired notifications
-        }
-      }
-      Err(error) => {
-        log::debug!("{error}");
-      }
-    }
+---
+
+## New configuration options
+
+These go in `~/.config/komorebi/komorebi.json` alongside the upstream keys.
+
+| Key | Type | Default | What it does |
+|---|---|---|---|
+| `border_flash_style` | `"width"` \| `"none"` | `"width"` | Animation played when a window takes focus. `width` flares the border wide and settles it back. |
+| `border_flash_factor` | number | `3.5` | How far the border flares, as a multiple of its settled width. |
+| `border_flash_duration_ms` | number | `220` | How long the flash lasts. |
+| `border_flash_easing` | string | `"easeOut"` | Timing curve: `easeOut`, `easeIn`, `easeInEaseOut` or `linear`. |
+| `border_radius_rules` | object | — | Per-application corner radius, keyed by application name. |
+
+> **On `border_flash_style`:** only `width` and `none` reach the screen. Opacity, scale,
+> colour and pulse variants were implemented and removed — the border layer sits inside a
+> transparent window with implicit actions disabled, so only its border width actually
+> redraws. They animated correctly and were invisible, which is worse than not offering
+> them at all.
+
+Example:
+
+```jsonc
+{
+  "border": true,
+  "border_width": 1,
+  "border_offset": -7,
+  "border_radius": 18,
+
+  "border_flash_style": "width",
+  "border_flash_factor": 9.0,
+  "border_flash_duration_ms": 110,
+  "border_flash_easing": "easeOut",
+
+  // macOS cannot report a window's radius, so apps that draw their own go here.
+  "border_radius_rules": {
+    "Discord": 14,
+    "WhatsApp": 14
   }
-
 }
 ```
 
-## Subscription Event Notification Schema
+**Focus follows mouse is not configured here** — it is a runtime toggle, see above.
 
-A [JSON Schema](https://json-schema.org/) of the event notifications emitted to
-subscribers can be generated with the `komorebic notification-schema` command.
+---
 
-## Socket Message Schema
+## Installation
 
-A [JSON Schema](https://json-schema.org/) of socket messages used to send
-instructions to `komorebi` can be generated with the `komorebic socket-schema`
-command.
+komorebi is **not** installed from Homebrew here: the three binaries (`komorebi`,
+`komorebic`, `komorebi-bar`) all come from this fork, so the daemon and the CLI are
+guaranteed to speak the same protocol.
+
+### 1. Build
+
+```sh
+git clone --branch mac-tweaks https://github.com/xexubonete/komorebi-for-mac.git ~/dev/komorebi-for-mac
+cd ~/dev/komorebi-for-mac
+cargo build --release
+```
+
+### 2. Code-sign
+
+macOS ties Accessibility permission to a stable code signature. Without one, every rebuild
+asks for permission again. A self-signed certificate is enough:
+
+```sh
+sh ~/dev/dotfiles/komorebi/setup-codesign.sh ~/dev/komorebi-for-mac/target/release/komorebi
+```
+
+### 3. Put the binaries on PATH
+
+```sh
+mkdir -p ~/.local/bin
+for bin in komorebi komorebic komorebi-bar; do
+  ln -sfn ~/dev/komorebi-for-mac/target/release/$bin ~/.local/bin/$bin
+done
+```
+
+Make sure `~/.local/bin` comes **first** on your PATH, and that it is set in `.zshenv`
+rather than `.zshrc` — skhd runs shortcuts through a non-interactive `zsh -c`, which never
+reads `.zshrc`. Without that, a shortcut can resolve to a different `komorebic`.
+
+### 4. Grant permissions
+
+System Settings → Privacy & Security → **Accessibility**, and add the `komorebi` binary.
+
+---
+
+## My configuration (dotfiles)
+
+Everything I run is in [xexubonete/dotfiles](https://github.com/xexubonete/dotfiles). If you
+want to reuse it, **copy the files to these paths** — or run that repo's `install.sh`, which
+symlinks them, builds this fork and sets up the launch agents for you.
+
+**Copy (or symlink) these as they are:**
+
+| File in `dotfiles/` | Destination |
+|---|---|
+| `komorebi/komorebi.json` | `~/.config/komorebi/komorebi.json` |
+| `komorebi/applications.json` | `~/.config/komorebi/applications.json` |
+| `komorebi/komorebi.bar.json` | `~/.config/komorebi/komorebi.bar.json` |
+| `skhd/skhdrc` | `~/.skhdrc` |
+| `komorebi/wakeup.sh` | `~/.wakeup` |
+
+Symlinking beats copying if you plan to change anything: edits stay versioned.
+
+**The launch agents are templates, not files to copy.** Each contains a placeholder that
+has to be replaced with an absolute path before it will load — `launchd` does not expand
+`~` or `$HOME`:
+
+| Template | Placeholder to replace |
+|---|---|
+| `komorebi/com.lgug2z.komorebi.plist` | `KOMOREBI_BINARY_PLACEHOLDER`, `KOMOREBI_CONFIG_PLACEHOLDER` |
+| `komorebi/com.xexu.startup.plist` | `STARTUP_SCRIPT_PLACEHOLDER` |
+| `komorebi/com.xexu.lockwatch.plist` | `DOTFILES_PLACEHOLDER` |
+| `komorebi/com.user.sleepwatcher.plist` | `DOTFILES_HOME` |
+
+Substitute, write the result to `~/Library/LaunchAgents/`, then `launchctl bootstrap` it.
+`install.sh` does all of this for you, which is the reason to prefer it over copying by
+hand.
+
+```sh
+git clone https://github.com/xexubonete/dotfiles.git ~/dev/dotfiles
+~/dev/dotfiles/install.sh
+```
+
+### What the helper scripts are for
+
+| Script | Why it exists |
+|---|---|
+| `komorebi/restart.sh` | `rset` — restarts komorebi with the apps still running. Session persistence is what makes this survivable. |
+| `komorebi/startup.sh` | Brings komorebi up at login, in the right order. |
+| `komorebi/wakeup.sh` | Run by sleepwatcher on wake. Waking is when displays reshuffle. |
+| `komorebi/lockwatch.sh` | Watches for screen lock/unlock, which is what the session latch depends on. |
+| `komorebi/setup-codesign.sh` | Self-signed certificate so Accessibility permission survives a rebuild. |
+| `komorebi/tab-to-workspace.sh` | Sends the focused window to a workspace by name. |
+
+### Keybindings
+
+Shortcuts live in `skhd/skhdrc`, vim-style: `ctrl + h/j/k/l` to focus, `ctrl + shift +
+h/j/k/l` to move, `ctrl + t` to float, `ctrl + f` for monocle. The file is commented with
+**why** certain bindings were removed, which is usually more useful than the binding itself.
+
+---
+
+## Staying in sync with upstream
+
+```sh
+git remote add upstream https://github.com/LGUG2Z/komorebi-for-mac.git
+git fetch upstream
+git log --oneline upstream/master..HEAD   # what this branch adds
+git rebase upstream/master                # expect conflicts; these are deep changes
+```
+
+## Licensing
+
+Unchanged from upstream. komorebi is released under the **Komorebi License 2.0.0** — see
+[`LICENSE.md`](LICENSE.md). Commercial use requires a licence from the original author, and
+forking does not alter that. If you use komorebi, [sponsor
+LGUG2Z](https://github.com/sponsors/LGUG2Z).
