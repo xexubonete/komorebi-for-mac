@@ -506,8 +506,14 @@ impl WindowManager {
                         // echo, and following it means arguing with the user mid-navigation.
                         // And not if the focus change is fallout rather than a request --
                         // see `focus_change_is_the_user_asking`.
+                        //
+                        // `is_known` comes out of an index that can have fallen behind the
+                        // workspaces it describes, so it says where the window *was* last
+                        // seen. Before following it anywhere, ask the workspace itself --
+                        // see `workspace_still_holds_window`.
                         if !is_on_current_workspace
                             && let Some((m_idx, w_idx)) = is_known
+                            && self.workspace_still_holds_window(m_idx, w_idx, window_id)
                             && !workspace_reconciliator::focus_was_ours(window_id)
                             && self.focus_change_is_the_user_asking()
                         {

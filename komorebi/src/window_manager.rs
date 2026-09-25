@@ -1635,6 +1635,35 @@ impl WindowManager {
         true
     }
 
+    /// Whether the index still describes where this window lives.
+    ///
+    /// `known_window_ids` is a snapshot. `update_known_window_ids` rebuilds it whole, but
+    /// not every path that changes a window's id goes through it: an application with
+    /// tabs reports a different window id for each tab, and the container takes the new
+    /// id on the spot. What the index is left holding is an id no workspace has any more,
+    /// still pointing at the workspace where it was last seen.
+    ///
+    /// Following one of those is how the desktop changes on its own. A focus report
+    /// arrives naming the stale id, the index says it lives elsewhere, and komorebi goes
+    /// there -- to a workspace that window is not on, so nothing is focused when it
+    /// arrives, so macOS hands focus back to the application whose windows were just
+    /// hidden, which raises the same question in reverse. Measured on 2026-09-24: 35
+    /// unasked workspace changes in three minutes, bouncing between two of them, against
+    /// one to four an hour on a normal day.
+    ///
+    /// So the index is a hint, and this is the question it cannot answer on its own.
+    pub fn workspace_still_holds_window(
+        &self,
+        monitor_idx: usize,
+        workspace_idx: usize,
+        window_id: u32,
+    ) -> bool {
+        self.monitors()
+            .get(monitor_idx)
+            .and_then(|monitor| monitor.workspaces().get(workspace_idx))
+            .is_some_and(|workspace| workspace.contains_window(window_id))
+    }
+
     pub fn reap_invalid_windows_for_application(&mut self, process_id: i32) -> eyre::Result<()> {
         let application = self.application(process_id)?;
         let mut valid_window_ids = vec![];
@@ -1653,7 +1682,14 @@ impl WindowManager {
             .reap_invalid_windows_for_application(process_id, &valid_window_ids)?;
 
         if reaped_count > 0 {
-            tracing::debug!("reaped {reaped_count} invalid window(s)");
+            // At warn: a window leaving the model without anyone seeing it is how a
+            // window "disappears from the grid", and at debug this said nothing on a log
+            // running at warn. The ids matter more than the count -- they are what ties
+            // the disappearance to whatever the application did a moment earlier.
+            tracing::warn!(
+                "REAPED {reaped_count} window(s) of process {process_id}; \
+                 accessibility still knows {valid_window_ids:?}"
+            );
         }
 
         self.update_focused_workspace(false, false)
@@ -5876,5 +5912,43 @@ mod tests {
         assert_eq!(op.target_monitor_idx, target_monitor_idx); // 2
         assert_eq!(op.target_workspace_idx, target_workspace_idx); // 3
         assert_eq!(op.floating, floating); // false
+    }
+
+    #[test]
+    fn test_workspace_still_holds_window() {
+        let (mut wm, _context) = setup_window_manager();
+
+        let mut m = monitor::new(
+            0,
+            Rect::default(),
+            Rect::default(),
+            "TestMonitor".to_string(),
+            "TestDeviceID".to_string(),
+        );
+
+        // two workspaces, a window on the first one only
+        m.focus_workspace(1).unwrap();
+        m.focus_workspace(0).unwrap();
+
+        let mut container = Container::default();
+        container.windows_mut().push_back(Window::from(123));
+        m.workspaces_mut()[0].add_container_to_back(container);
+
+        wm.monitors_mut().push_back(m);
+
+        // the window is where it is said to be
+        assert!(wm.workspace_still_holds_window(0, 0, 123));
+
+        // the same id on a workspace that does not hold it: this is the stale record
+        // that used to send komorebi off to a workspace the window is not on
+        assert!(!wm.workspace_still_holds_window(0, 1, 123));
+
+        // an id no workspace holds at all, which is what a record outliving its window
+        // looks like
+        assert!(!wm.workspace_still_holds_window(0, 0, 456));
+
+        // indices that do not exist answer no rather than panicking
+        assert!(!wm.workspace_still_holds_window(0, 9, 123));
+        assert!(!wm.workspace_still_holds_window(9, 0, 123));
     }
 }

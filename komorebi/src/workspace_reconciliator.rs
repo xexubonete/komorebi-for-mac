@@ -267,22 +267,23 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 continue;
             }
 
-            tracing::warn!(
-                "RECONCILE acting: {focused_monitor_idx}/{focused_workspace_idx} -> {}/{}",
-                notification.monitor_idx,
-                notification.workspace_idx
-            );
-            wm.focus_monitor(notification.monitor_idx)?;
-            let mouse_follows_focus = wm.mouse_follows_focus;
-
-            // Did one of our own windows trigger this, or someone else's?
+            // Is the window that raised this still one komorebi manages?
             //
-            // Reconciliation runs off system events, not off anything the user asked
-            // komorebi to do, so it has to be careful about taking focus. A window we
-            // manage coming to the front (Cmd+Tab) should end up focused. A window we do
-            // not manage coming to the front -- System Settings, opened from a launcher
-            // -- is the user going somewhere else, and stealing focus back drags them out
-            // of the window that just appeared.
+            // Reconciliation is only ever asked for on behalf of a window the index said
+            // lived on another workspace. So a trigger that no workspace holds is not the
+            // user going somewhere else, it is a record that has outlived its window --
+            // an application with tabs reporting an id its container no longer carries,
+            // most often -- and there is nowhere to follow it to.
+            //
+            // This used to change workspace anyway and simply not take focus, which is
+            // the worst of both: the desktop moves under the user, nothing there has
+            // focus, and the application whose windows were just hidden gets focus back
+            // from macOS -- raising the same phantom in the other direction, for as long
+            // as anyone has the patience to watch. Measured on 2026-09-24: 35 unasked
+            // changes in three minutes, ping-ponging between two workspaces.
+            //
+            // Staying put is the answer that cannot be wrong: the user is looking at the
+            // workspace they chose, and the only thing lost is a jump nobody asked for.
             let triggered_by_managed_window =
                 notification
                     .triggered_by
@@ -296,48 +297,57 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                         })
                     });
 
+            if !triggered_by_managed_window {
+                // TRACE: the phantom this guard exists for. Seeing it means an id
+                // outlived its window somewhere upstream; seeing a lot of them means the
+                // index is drifting faster than it is rebuilt. Grep marker: RECONCILE.
+                tracing::warn!(
+                    "RECONCILE declined: trigger {:?} is on no workspace any more; staying on {focused_monitor_idx}/{focused_workspace_idx}",
+                    notification.triggered_by.window_id()
+                );
+
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                LAST_RECONCILIATION.store(now, Ordering::SeqCst);
+                RECONCILIATION_IN_PROGRESS.store(false, Ordering::Relaxed);
+                continue;
+            }
+
+            tracing::warn!(
+                "RECONCILE acting: {focused_monitor_idx}/{focused_workspace_idx} -> {}/{}",
+                notification.monitor_idx,
+                notification.workspace_idx
+            );
+            wm.focus_monitor(notification.monitor_idx)?;
+            let mouse_follows_focus = wm.mouse_follows_focus;
+
             if let Some(monitor) = wm.focused_monitor_mut() {
                 let previous_idx = monitor.focused_workspace_idx();
                 monitor.last_focused_workspace = Option::from(previous_idx);
                 monitor.focus_workspace(notification.workspace_idx)?;
-
-                // The workspace still needs laying out either way; the only question is
-                // whether to grab focus at the end of it.
-                if triggered_by_managed_window {
-                    monitor.load_focused_workspace(mouse_follows_focus)?;
-                } else {
-                    // This is the branch that changes workspace and focuses nothing --
-                    // exactly what "it jumped somewhere and no window has focus" looks
-                    // like from the outside.
-                    tracing::warn!(
-                        "RECONCILE trigger is not a window komorebi manages; switching without taking focus"
-                    );
-                    monitor.load_focused_workspace_without_taking_focus(mouse_follows_focus)?;
-                }
+                monitor.load_focused_workspace(mouse_follows_focus)?;
             }
 
             if let Some(window_id) = notification.triggered_by.window_id() {
-                // Only hand focus over when the window that triggered this is one we
-                // actually manage.
+                // Only hand focus over when the trigger is on the workspace we just
+                // arrived at.
                 //
                 // The point of focusing here is Cmd+Tab: the window being switched to
                 // lives on another space, and it should end up genuinely focused rather
-                // than leaving focus on whichever container was selected before. But a
-                // window komorebi does not manage can trigger this too -- System Settings
-                // opening is one -- and then focus_container_by_window finds nothing,
-                // focused_container is still whatever was selected a moment ago, and we
-                // would pull focus onto that instead. The window the user just opened
-                // loses focus roughly 25ms after appearing.
-                //
-                // So the search result decides: found means the trigger is ours and
-                // focusing it is right; not found means someone else's window is coming
-                // to the front and it is not our business to interfere.
-                let manages_trigger = triggered_by_managed_window
-                    && wm.focused_workspace_mut().is_ok_and(|workspace| {
-                        workspace.focus_container_by_window(window_id).is_ok()
-                    });
+                // than leaving focus on whichever container was selected before. The
+                // guard above establishes that komorebi manages it somewhere; this
+                // establishes that it is *here*. Without the second half,
+                // focus_container_by_window finds nothing, focused_container is still
+                // whatever was selected a moment ago, and we pull focus onto that
+                // instead -- the window the user just reached for loses focus roughly
+                // 25ms after appearing.
+                let trigger_is_here = wm.focused_workspace_mut().is_ok_and(|workspace| {
+                    workspace.focus_container_by_window(window_id).is_ok()
+                });
 
-                if manages_trigger
+                if trigger_is_here
                     && let Ok(workspace) = wm.focused_workspace()
                     && let Some(container) = workspace.focused_container()
                     && let Some(window) = container.focused_window()
