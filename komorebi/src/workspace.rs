@@ -268,7 +268,47 @@ pub fn hide_in_parallel(to_hide: Vec<Window>, hiding_position: WindowHidingPosit
     });
 }
 
+/// Whether this window is komorebi's to move right now.
+///
+/// A window in macOS full screen lives on a Space of its own, and the layout has no
+/// business there. Trying anyway does one of two things, and both were measured on
+/// 2026-09-25 against a game streaming at 4K120:
+///
+/// * **It succeeds, and ruins what the user asked for.** The window was 3840x2160 --
+///   the whole panel -- and the cell it belongs to is 3836x2128 once padding is taken
+///   out. Four pixels of width and thirty-two of height are enough to stop it being a
+///   full-screen surface, so the game re-scales to a window that is almost, but not,
+///   the screen.
+/// * **It fails, over and over.** Once the window is on its own Space the write comes
+///   back `AXError::Failure`, the layout runs again on the next event, and the log fills
+///   with a fight nobody can win.
+///
+/// The cost is one Accessibility read per window being placed -- the same kind of round
+/// trip `set_position` already makes to ask where the window is.
+fn is_ours_to_place(window: &Window) -> bool {
+    !window.is_native_fullscreen()
+}
+
 fn place_in_parallel(to_place: Vec<(Window, Rect)>) {
+    let to_place: Vec<(Window, Rect)> = to_place
+        .into_iter()
+        .filter(|(window, _)| {
+            let ours = is_ours_to_place(window);
+
+            if !ours {
+                // TRACE: the layout silently skipping a window is confusing on its own --
+                // the cell looks empty and nothing says why. Grep marker: FULLSCREEN.
+                tracing::warn!(
+                    "FULLSCREEN leaving window {} ({:?}) alone: macOS has it on its own space",
+                    window.id,
+                    window.exe().unwrap_or_default()
+                );
+            }
+
+            ours
+        })
+        .collect();
+
     if to_place.len() < 2 {
         for (window, rect) in &to_place {
             if let Err(error) = window.set_position(rect) {
@@ -2954,5 +2994,14 @@ mod tests {
             "Container 1 right edge ({}) should not exceed monitor width (5120)",
             container1_right_edge
         );
+    }
+
+    #[test]
+    fn test_is_ours_to_place() {
+        // A window with no Accessibility element behind it -- which is every window in
+        // these tests -- cannot be in full screen, and must stay placeable. The guard is
+        // in the path that moves every window on screen, so a wrong answer here would
+        // not skip one window: it would stop the layout working at all.
+        assert!(is_ours_to_place(&Window::from(123)));
     }
 }
