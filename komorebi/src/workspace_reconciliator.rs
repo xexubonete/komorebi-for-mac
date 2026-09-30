@@ -90,11 +90,21 @@ const BURST_LIFETIME: Duration = Duration::from_secs(2);
 
 struct OwnFocus {
     window_id: u32,
+    /// The application the window belongs to.
+    ///
+    /// One report of the burst does not name the window komorebi focused.
+    /// `NSWorkspaceDidActivateApplication` is about an application, and the window id it
+    /// arrives with is resolved through that application's *main* window -- which is a
+    /// different window of the same application whenever one is open on another
+    /// workspace. Measured: komorebi focused Brave window 1299 on workspace 1, the report
+    /// arrived naming Brave window 1960 on workspace 0, and the workspace followed it
+    /// back. Recognising the application is what closes that gap.
+    process_id: i32,
     at: Instant,
 }
 
 /// Record that komorebi is about to focus this window itself.
-pub fn note_focus_we_caused(window_id: u32) {
+pub fn note_focus_we_caused(window_id: u32, process_id: i32) {
     let mut ours = FOCUS_WE_CAUSED.lock();
 
     // Already the most recent? Then re-recording it would push out an older entry that is
@@ -106,6 +116,7 @@ pub fn note_focus_we_caused(window_id: u32) {
     ours.retain(|focus| focus.window_id != window_id);
     ours.push(OwnFocus {
         window_id,
+        process_id,
         at: Instant::now(),
     });
 
@@ -115,24 +126,33 @@ pub fn note_focus_we_caused(window_id: u32) {
 }
 
 /// Whether this focus change is one komorebi caused.
-pub fn focus_was_ours(window_id: u32) -> bool {
+pub fn focus_was_ours(window_id: u32, process_id: i32) -> bool {
     let mut ours = FOCUS_WE_CAUSED.lock();
 
-    let Some(idx) = ours.iter().position(|focus| focus.window_id == window_id) else {
-        return false;
-    };
+    if let Some(idx) = ours.iter().position(|focus| focus.window_id == window_id) {
+        // Too old to still be waiting: this is the user reaching for the window, not
+        // macOS catching up. Retire it, and everything older, so it cannot swallow the
+        // next one.
+        if ours[idx].at.elapsed() > BURST_LIFETIME {
+            ours.drain(..=idx);
+            return false;
+        }
 
-    // Too old to still be waiting: this is the user reaching for the window, not macOS
-    // catching up. Retire it, and everything older, so it cannot swallow the next one.
-    if ours[idx].at.elapsed() > BURST_LIFETIME {
-        ours.drain(..=idx);
-        return false;
+        // Not consumed -- the rest of this burst is still to come -- but everything
+        // focused before it has demonstrably finished reporting.
+        ours.drain(..idx);
+        return true;
     }
 
-    // Not consumed -- the rest of this burst is still to come -- but everything focused
-    // before it has demonstrably finished reporting.
-    ours.drain(..idx);
-    true
+    // No record names this window, so this may still be the application-level report of
+    // a burst komorebi caused, naming a different window of the same application.
+    //
+    // Deliberately retires nothing. This is the weaker match -- an application, not a
+    // window -- and the burst it belongs to may still deliver reports that do name the
+    // window. Letting it drain records would throw those away.
+    ours.iter()
+        .rev()
+        .any(|focus| focus.process_id == process_id && focus.at.elapsed() <= BURST_LIFETIME)
 }
 
 /// Record that the user navigated to a workspace directly.

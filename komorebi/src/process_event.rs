@@ -514,7 +514,7 @@ impl WindowManager {
                         if !is_on_current_workspace
                             && let Some((m_idx, w_idx)) = is_known
                             && self.workspace_still_holds_window(m_idx, w_idx, window_id)
-                            && !workspace_reconciliator::focus_was_ours(window_id)
+                            && !workspace_reconciliator::focus_was_ours(window_id, event.process_id())
                             && self.focus_change_is_the_user_asking()
                         {
                             workspace_reconciliator::send_notification(m_idx, w_idx, event);

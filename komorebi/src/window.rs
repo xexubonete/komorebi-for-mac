@@ -1290,7 +1290,7 @@ impl Window {
     pub fn focus(&self, mouse_follows_focus: bool) -> Result<(), LibraryError> {
         // Remember that this focus change is ours, so the focus event it produces can be
         // recognised as an echo rather than as the user going somewhere.
-        crate::workspace_reconciliator::note_focus_we_caused(self.id);
+        crate::workspace_reconciliator::note_focus_we_caused(self.id, self.application.process_id);
 
         // TIMING: focusing one window costs as much as laying out a whole workspace --
         // 43ms measured, against 40ms for placing every window on it. Three different
