@@ -247,7 +247,7 @@ impl WindowManager {
         // from the input listener
         if !matches!(
             event,
-            WindowManagerEvent::Show(SystemNotification::Manual(_), _)
+            WindowManagerEvent::Show(SystemNotification::Manual(_), _, _)
         ) {
             tracing::info!(
                 "processing event: {event} for process {} with notification {}",
@@ -536,7 +536,7 @@ impl WindowManager {
                 }
             }
             // TODO: update this to work with floating applications / rules
-            WindowManagerEvent::Show(_, process_id)
+            WindowManagerEvent::Show(_, process_id, _)
             | WindowManagerEvent::Manage(_, process_id, _) => {
                 // A window is coming up and macOS is about to focus it. Note the moment so
                 // the parts of komorebi that move focus around leave it alone until it has
@@ -572,9 +572,16 @@ impl WindowManager {
 
                         let mut candidates = vec![];
 
+                        // Zero is not a window id: it is what the window server
+                        // answers for an element that has no window behind it, and cmux
+                        // offers two of those among the nine elements it lists for one
+                        // visible window. Keeping them would put an id in the grid that
+                        // nothing can be done with.
                         if let Some(elements) = application.window_elements() {
                             for element in elements {
-                                if let Ok(wid) = AccessibilityApi::window_id(&element) {
+                                if let Ok(wid) = AccessibilityApi::window_id(&element)
+                                    && wid != 0
+                                {
                                     candidates.push((wid, element.clone()));
                                 }
                             }
@@ -582,6 +589,7 @@ impl WindowManager {
 
                         if let Some(element) = application.main_window()
                             && let Ok(wid) = AccessibilityApi::window_id(&element)
+                            && wid != 0
                             && !candidates.iter().any(|(known, _)| *known == wid)
                         {
                             candidates.push((wid, element.clone()));
@@ -590,10 +598,37 @@ impl WindowManager {
                         candidates
                     };
 
-                    let chosen = candidates
-                        .iter()
-                        .find(|(wid, _)| !self.manages_window(*wid))
+                    // The window the notification named, when it named one. Anything
+                    // else here is a guess, and the guess below is what let cmux's
+                    // windows fall out of the layout -- see the note in
+                    // application.rs where the id is read off the element.
+                    //
+                    // Checked against the list rather than trusted outright: an id for a
+                    // window the application no longer offers is one that has already
+                    // gone, and acting on it would put a dead window in the grid.
+                    let announced = event
+                        .window_id()
+                        .and_then(|wanted| candidates.iter().find(|(wid, _)| *wid == wanted));
+
+                    let chosen = announced
+                        .or_else(|| candidates.iter().find(|(wid, _)| !self.manages_window(*wid)))
                         .or_else(|| candidates.first());
+
+                    // Which windows the application offered and which one was taken for
+                    // the one that just appeared. Without this the Show path is silent
+                    // when it decides the event was a duplicate, and a new window that
+                    // never entered the layout looks identical to one that was never
+                    // announced. Grep marker: SHOW candidates.
+                    tracing::debug!(
+                        "SHOW candidates {application_name:?} offered={:?} managed={:?} announced={:?} chosen={:?}",
+                        candidates.iter().map(|(wid, _)| *wid).collect::<Vec<_>>(),
+                        candidates
+                            .iter()
+                            .map(|(wid, _)| self.manages_window(*wid))
+                            .collect::<Vec<_>>(),
+                        event.window_id(),
+                        chosen.map(|(wid, _)| *wid)
+                    );
 
                     if let Some((wid, element)) = chosen {
                         window_id = Some(*wid);
@@ -630,7 +665,7 @@ impl WindowManager {
                     if workspace.contains_window(window_id) {
                         if !matches!(
                             event,
-                            WindowManagerEvent::Show(SystemNotification::Manual(_), _)
+                            WindowManagerEvent::Show(SystemNotification::Manual(_), _, _)
                         ) {
                             // don't want to spam logs for manually triggered hacks triggered
                             // from the input listener

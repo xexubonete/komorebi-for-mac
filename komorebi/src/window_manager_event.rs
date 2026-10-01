@@ -33,7 +33,7 @@ pub enum ManualNotification {
 #[serde(tag = "type", content = "content")]
 pub enum WindowManagerEvent {
     FocusChange(SystemNotification, i32, Option<u32>),
-    Show(SystemNotification, i32),
+    Show(SystemNotification, i32, Option<u32>),
     Destroy(SystemNotification, i32),
     Minimize(SystemNotification, i32, u32),
     Restore(SystemNotification, i32, u32),
@@ -76,7 +76,7 @@ impl WindowManagerEvent {
             )
             | SystemNotification::Manual(ManualNotification::ShowOnFocusChangeFirstTabDestroyed)
             | SystemNotification::Manual(ManualNotification::ShowOnInputEvent) => {
-                Some(WindowManagerEvent::Show(notification, process_id))
+                Some(WindowManagerEvent::Show(notification, process_id, window_id))
             }
             SystemNotification::Accessibility(AccessibilityNotification::AXUIElementDestroyed)
             | SystemNotification::AppKitWorkspace(
@@ -147,7 +147,7 @@ impl WindowManagerEvent {
     pub fn process_id(&self) -> i32 {
         match self {
             WindowManagerEvent::FocusChange(_, process_id, _)
-            | WindowManagerEvent::Show(_, process_id)
+            | WindowManagerEvent::Show(_, process_id, _)
             | WindowManagerEvent::Destroy(_, process_id)
             | WindowManagerEvent::Minimize(_, process_id, _)
             | WindowManagerEvent::Manage(_, process_id, _)
@@ -166,7 +166,7 @@ impl WindowManagerEvent {
     pub fn notification(&self) -> String {
         match self {
             WindowManagerEvent::FocusChange(n, _, _)
-            | WindowManagerEvent::Show(n, _)
+            | WindowManagerEvent::Show(n, _, _)
             | WindowManagerEvent::Destroy(n, _)
             | WindowManagerEvent::Minimize(n, _, _)
             | WindowManagerEvent::Manage(n, _, _)
@@ -189,8 +189,8 @@ impl WindowManagerEvent {
     pub fn window_id(&self) -> Option<u32> {
         match self {
             WindowManagerEvent::FocusChange(_, _, window_id) => *window_id,
-            WindowManagerEvent::Show(_, _)
-            | WindowManagerEvent::Destroy(_, _)
+            WindowManagerEvent::Show(_, _, window_id) => *window_id,
+            WindowManagerEvent::Destroy(_, _)
             | WindowManagerEvent::ScreenLock(_, _)
             | WindowManagerEvent::ScreenUnlock(_, _)
             | WindowManagerEvent::SpaceChange(_, _) => None,

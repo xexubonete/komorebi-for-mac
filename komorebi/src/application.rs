@@ -100,11 +100,31 @@ unsafe extern "C-unwind" fn application_observer_callback(
             let mut process_id = 0;
             element.as_ref().pid(NonNull::from_mut(&mut process_id));
 
+            // Which window this is about. The notification arrives with the element it
+            // concerns, and for AXWindowCreated that element *is* the window that just
+            // appeared -- so it is the one thing here that knows the answer for certain.
+            //
+            // It used to be thrown away, and the Show path downstream had to work out
+            // which window had appeared by taking the first one the application listed
+            // that komorebi did not already manage. That guess holds only for
+            // applications whose window list contains nothing but real windows. cmux
+            // lists nine elements for one visible window, all claiming AXStandardWindow
+            // and the real window's title, and one of them is permanently unmanaged: it
+            // sorts ahead of the new window and so was chosen every single time. Every
+            // new cmux window after the first stayed out of the layout, and the log said
+            // only that the event had been handled.
+            //
+            // Zero is what the window server answers for an element that has no window,
+            // which is not an answer: those fall back to the guess like before.
+            let announced_window_id = AccessibilityApi::window_id(element.as_ref())
+                .ok()
+                .filter(|window_id| *window_id != 0);
+
             if let Ok(notification) = AccessibilityNotification::from_str(&notification_str)
                 && let Some(event) = WindowManagerEvent::from_system_notification(
                     SystemNotification::Accessibility(notification),
                     process_id,
-                    None,
+                    announced_window_id,
                 )
             {
                 tracing::debug!(

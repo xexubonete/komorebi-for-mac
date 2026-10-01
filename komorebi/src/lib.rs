@@ -251,7 +251,7 @@ pub fn notify_subscribers(
             | NotificationEvent::Socket(SocketMessage::Theme(_))
             | NotificationEvent::Socket(SocketMessage::ReloadStaticConfiguration(_))
             // | NotificationEvent::WindowManager(WindowManagerEvent::TitleUpdate(_, _))
-            | NotificationEvent::WindowManager(WindowManagerEvent::Show(_, _)) // | NotificationEvent::WindowManager(WindowManagerEvent::Uncloak(_, _))
+            | NotificationEvent::WindowManager(WindowManagerEvent::Show(_, _, _)) // | NotificationEvent::WindowManager(WindowManagerEvent::Uncloak(_, _))
     );
 
     let mut sockets = SUBSCRIPTION_SOCKETS.lock();

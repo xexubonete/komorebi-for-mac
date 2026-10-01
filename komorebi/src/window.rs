@@ -1653,6 +1653,7 @@ impl Window {
             Some(WindowManagerEvent::Show(
                 SystemNotification::Accessibility(AccessibilityNotification::AXWindowCreated),
                 _,
+                _,
             ))
         ) && self
             .subrole()
