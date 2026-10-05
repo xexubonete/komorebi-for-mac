@@ -680,6 +680,23 @@ impl MacosApi {
         }
     }
 
+    /// The process that owns keyboard focus, asked of Accessibility rather than AppKit so
+    /// it is current on any thread.
+    pub fn foreground_process_id() -> Option<i32> {
+        unsafe {
+            let syswide = AXUIElement::new_system_wide();
+            let app = AccessibilityApi::copy_attribute_value::<AXUIElement>(
+                &syswide,
+                kAXFocusedApplicationAttribute,
+            )?;
+
+            let mut process_id = 0;
+            app.pid(NonNull::from_mut(&mut process_id));
+
+            (process_id != 0).then_some(process_id)
+        }
+    }
+
     pub fn foreground_window() -> Option<CFRetained<AXUIElement>> {
         unsafe {
             let syswide = AXUIElement::new_system_wide();

@@ -511,14 +511,36 @@ impl WindowManager {
                         // workspaces it describes, so it says where the window *was* last
                         // seen. Before following it anywhere, ask the workspace itself --
                         // see `workspace_still_holds_window`.
+                        //
+                        // And not for a main-window change in an application that is not
+                        // in front. That report says which window the application considers
+                        // its main one, not that anything came forward: a real activation
+                        // also reports AXApplicationActivated and the NSWorkspace activation,
+                        // which still reconcile. Measured on Rider: a modal dialog (Settings,
+                        // New Solution) left open on another workspace re-announces itself
+                        // every second or two, and each one dragged the user back to it.
                         if !is_on_current_workspace
                             && let Some((m_idx, w_idx)) = is_known
                             && self.workspace_still_holds_window(m_idx, w_idx, window_id)
                             && !workspace_reconciliator::focus_was_ours(window_id, event.process_id())
                             && self.focus_change_is_the_user_asking()
                         {
-                            workspace_reconciliator::send_notification(m_idx, w_idx, event);
-                            needs_reconciliation = true;
+                            let background_main_window_change = matches!(
+                                notification,
+                                SystemNotification::Accessibility(
+                                    AccessibilityNotification::AXMainWindowChanged
+                                )
+                            ) && MacosApi::foreground_process_id()
+                                .is_some_and(|foreground| foreground != event.process_id());
+
+                            if background_main_window_change {
+                                tracing::warn!(
+                                    "RECONCILE declined: {application_name} changed main window {window_id} from the background; staying put"
+                                );
+                            } else {
+                                workspace_reconciliator::send_notification(m_idx, w_idx, event);
+                                needs_reconciliation = true;
+                            }
                         }
                     }
                 }
