@@ -1156,7 +1156,21 @@ impl Window {
                         0
                     };
 
-                    if refused_width > 0 || refused_height > 0 {
+                    // A window blocked by a modal dialog refuses every resize, whatever
+                    // its real minimum: measured on Rider, whose project window turns
+                    // into an AXDialog while Settings or New Solution is open and keeps
+                    // its full-screen width against any request. Learning from that
+                    // records the whole screen as the app's minimum, and since a minimum
+                    // only ever grows, the app is evicted from every shared workspace for
+                    // good. Only a standard window's refusal says anything about its floor.
+                    let subrole = self.subrole();
+
+                    if subrole.as_deref() != Some("AXStandardWindow") {
+                        tracing::warn!(
+                            "SELFMOVE not learning a minimum for {name} from window={} with subrole={subrole:?}",
+                            self.id
+                        );
+                    } else if refused_width > 0 || refused_height > 0 {
                         crate::min_size::record(name, refused_width, refused_height);
                     }
                 }
