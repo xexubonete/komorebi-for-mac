@@ -93,6 +93,7 @@ nav:
       - cli/cycle-focus.md
       - cli/cycle-move.md
       - cli/eager-focus.md
+      - cli/focus-window-id.md
       - cli/stack.md
       - cli/unstack.md
       - cli/cycle-stack.md

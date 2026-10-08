@@ -310,6 +310,7 @@ pub enum SocketMessage {
     PromoteFocus,
     PromoteWindow(OperationDirection),
     EagerFocus(String),
+    FocusWindowId(u32),
     LockMonitorWorkspaceContainer(usize, usize, usize),
     UnlockMonitorWorkspaceContainer(usize, usize, usize),
     ToggleLock,

@@ -240,6 +240,59 @@ impl WindowManager {
                     }
                 }
             }
+            SocketMessage::FocusWindowId(window_id) => {
+                // Only on the focused workspace: this picks one of the windows the user is
+                // already looking at, it never takes them to another workspace.
+                let mouse_follows_focus = self.mouse_follows_focus;
+                let workspace = self.focused_workspace()?;
+
+                let in_monocle = workspace
+                    .monocle_container
+                    .as_ref()
+                    .and_then(|container| container.idx_for_window(window_id));
+
+                // With a monocle up the tiled containers are hidden behind it, so only the
+                // monocle itself counts as a tiled target.
+                let in_container = if workspace.monocle_container.is_some() {
+                    None
+                } else {
+                    workspace
+                        .container_idx_for_window(window_id)
+                        .and_then(|container_idx| {
+                            workspace.containers()[container_idx]
+                                .idx_for_window(window_id)
+                                .map(|window_idx| (container_idx, window_idx))
+                        })
+                };
+
+                let is_maximized = workspace
+                    .maximized_window
+                    .as_ref()
+                    .is_some_and(|window| window.id == window_id);
+
+                let in_floating = workspace
+                    .floating_windows()
+                    .iter()
+                    .position(|window| window.id == window_id);
+
+                if let Some(window_idx) = in_monocle {
+                    self.focus_container_window(window_idx)?;
+                } else if let Some((container_idx, window_idx)) = in_container {
+                    self.focused_workspace_mut()?.focus_container(container_idx);
+                    self.focus_container_window(window_idx)?;
+                } else if is_maximized {
+                    if let Some(window) = &self.focused_workspace()?.maximized_window {
+                        window.focus(mouse_follows_focus)?;
+                    }
+                } else if let Some(window_idx) = in_floating {
+                    if let Some(window) = self.focused_workspace()?.floating_windows().get(window_idx)
+                    {
+                        window.focus(mouse_follows_focus)?;
+                    }
+                } else {
+                    tracing::warn!("window {window_id} is not on the focused workspace");
+                }
+            }
             SocketMessage::FocusWindow(direction) => {
                 let focused_workspace = self.focused_workspace()?;
                 match focused_workspace.layer {
