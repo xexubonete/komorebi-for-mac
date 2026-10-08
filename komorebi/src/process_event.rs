@@ -519,6 +519,12 @@ impl WindowManager {
                         // which still reconcile. Measured on Rider: a modal dialog (Settings,
                         // New Solution) left open on another workspace re-announces itself
                         // every second or two, and each one dragged the user back to it.
+                        //
+                        // This does race a real activation: Brave was measured announcing
+                        // its main window 27ms before the NSWorkspace activation that brought
+                        // it forward, and was declined here as background. That costs
+                        // nothing, because declining here starts no cooldown and records no
+                        // focus -- the activation reports that follow still do the following.
                         if !is_on_current_workspace
                             && let Some((m_idx, w_idx)) = is_known
                             && self.workspace_still_holds_window(m_idx, w_idx, window_id)
@@ -538,7 +544,39 @@ impl WindowManager {
                                     "RECONCILE declined: {application_name} changed main window {window_id} from the background; staying put"
                                 );
                             } else {
-                                workspace_reconciliator::send_notification(m_idx, w_idx, event);
+                                // Name the window this was decided on, not the one the
+                                // report arrived with.
+                                //
+                                // AXApplicationActivated is about an application, so it
+                                // arrives naming no window, and the reconciliator takes a
+                                // trigger that names no window for one that has outlived
+                                // it: it declines, and starts its cooldown. The NSWorkspace
+                                // activation for the same click, which does name the
+                                // window, lands inside that cooldown and is thrown away.
+                                // macOS delivers the two in no fixed order, so opening a
+                                // link in a browser that lives on another workspace
+                                // followed it when the NSWorkspace report won the race and
+                                // did nothing at all when it lost. Measured over two days:
+                                // every one of the 32 workspace changes made here was
+                                // raised by an NSWorkspace or a main-window report, all 4
+                                // activation reports that reached the reconciliator were
+                                // declined, and nothing was raised after any of them. One
+                                // was a link from VS Code into Brave, and the user went
+                                // through four workspaces looking for it; three more links
+                                // that morning arrived the other way round and followed.
+                                //
+                                // `window_id` is the application's main window, just checked
+                                // against the workspace being followed to, so it is also
+                                // the window to hand focus to on arrival.
+                                workspace_reconciliator::send_notification(
+                                    m_idx,
+                                    w_idx,
+                                    WindowManagerEvent::FocusChange(
+                                        notification,
+                                        process_id,
+                                        Some(window_id),
+                                    ),
+                                );
                                 needs_reconciliation = true;
                             }
                         }
