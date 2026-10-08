@@ -1054,16 +1054,57 @@ impl WindowManager {
         for _ in 0..MAX_RELOCATIONS_PER_PASS {
             let pinned = self.user_placed_window();
 
-            let candidate = match self.window_needing_more_room()? {
-                Some(candidate) => Some(candidate),
-                // Nothing movable is short of width. If the window the user placed here
+            // What to move and where, as (container, application, minimum width,
+            // destination workspace).
+            let decision = match self.window_needing_more_room()? {
+                Some((container_idx, application, minimum)) => {
+                    match self.workspace_with_room_for(&application)? {
+                        Some(target_idx) => Some((container_idx, application, minimum, target_idx)),
+                        // Nowhere it would fit. This used to be the end of it, and the
+                        // window was left spilling over its neighbour -- WhatsApp, 970
+                        // wide, next to Brave on a 1680-wide built-in display, where
+                        // two columns come out at 836 and every other workspace already
+                        // held a window, so joining any of them meant 836 again. But
+                        // the window it overlaps can usually go somewhere, and taking
+                        // it away widens the column that was too narrow. Leaving the
+                        // overlap is only right when nothing on this workspace can be
+                        // moved anywhere, or when the window would not fit here even
+                        // on its own.
+                        None => {
+                            let eviction = self.neighbour_to_evict_for(container_idx)?;
+
+                            match &eviction {
+                                Some((_, neighbour, _, _)) => tracing::warn!(
+                                    "{application} needs {minimum} points of width and no workspace has room for it; moving {neighbour} out of its way instead"
+                                ),
+                                None => tracing::warn!(
+                                    "{application} needs {minimum} points of width and no workspace has room for it or for anything beside it; leaving it where it is"
+                                ),
+                            }
+
+                            eviction
+                        }
+                    }
+                }
+                // Nothing movable is short of room. If the window the user placed here
                 // is the one that does not fit, evict a neighbour to widen the columns
                 // for it, rather than sending it back where it came from.
                 None => match pinned {
-                    Some(id) if self.window_is_below_minimum(id)? => {
-                        self.neighbour_to_evict_for(id)?
-                    }
-                    _ => None,
+                    Some(id) => match self.window_below_minimum(id)? {
+                        Some((container_idx, application)) => {
+                            let eviction = self.neighbour_to_evict_for(container_idx)?;
+
+                            if eviction.is_none() {
+                                tracing::warn!(
+                                    "{application} does not fit here and nothing beside it has anywhere to go; leaving it where it is"
+                                );
+                            }
+
+                            eviction
+                        }
+                        None => None,
+                    },
+                    None => None,
                 },
             };
 
@@ -1084,20 +1125,16 @@ impl WindowManager {
                         .map(|r| r.right)
                         .collect::<Vec<_>>(),
                     pinned,
-                    candidate
-                        .as_ref()
-                        .map(|(idx, app, min)| (*idx, app.clone(), *min))
+                    decision.as_ref().map(|(idx, app, min, target)| (
+                        *idx,
+                        app.clone(),
+                        *min,
+                        *target + 1
+                    ))
                 );
             }
 
-            let Some((container_idx, application, minimum)) = candidate else {
-                break;
-            };
-
-            let Some(target_idx) = self.workspace_with_room_for(minimum)? else {
-                tracing::warn!(
-                    "{application} needs {minimum} points of width and no workspace has room for it; leaving it where it is"
-                );
+            let Some((container_idx, application, minimum, target_idx)) = decision else {
                 break;
             };
 
@@ -1183,8 +1220,9 @@ impl WindowManager {
         })
     }
 
-    /// Whether a window is currently narrower than its application will accept.
-    fn window_is_below_minimum(&self, window_id: u32) -> eyre::Result<bool> {
+    /// The container and application of a window that is currently narrower or shorter
+    /// than its application will accept, or None if it fits its cell.
+    fn window_below_minimum(&self, window_id: u32) -> eyre::Result<Option<(usize, String)>> {
         let workspace = self.focused_workspace()?;
 
         for (container_idx, container) in workspace.containers().iter().enumerate() {
@@ -1193,7 +1231,7 @@ impl WindowManager {
             }
 
             let Some(assigned) = workspace.latest_layout.get(container_idx) else {
-                return Ok(false);
+                return Ok(None);
             };
 
             for window in container.windows().iter() {
@@ -1202,7 +1240,7 @@ impl WindowManager {
                 }
 
                 let Some(application) = window.application.name() else {
-                    return Ok(false);
+                    return Ok(None);
                 };
 
                 let too_narrow = crate::min_size::get(&application)
@@ -1211,11 +1249,11 @@ impl WindowManager {
                 let too_short = crate::min_size::get_height(&application)
                     .is_some_and(|minimum| minimum > assigned.bottom);
 
-                return Ok(too_narrow || too_short);
+                return Ok((too_narrow || too_short).then_some((container_idx, application)));
             }
         }
 
-        Ok(false)
+        Ok(None)
     }
 
     /// The window the user deliberately placed on this workspace, if any.
@@ -1226,23 +1264,62 @@ impl WindowManager {
             .filter(|id| *id != 0)
     }
 
-    /// A neighbour to move out so the window the user placed here can fit.
+    /// A neighbour to move out so the window in `stuck` can fit, together with the
+    /// workspace it would go to, as (container, application, minimum width, destination).
     ///
-    /// Reached when the only window below its minimum is one that must stay put. Nothing
-    /// can widen it in place, but taking any other window off the workspace widens every
-    /// column that remains -- so the fix is to evict a neighbour rather than the window
-    /// the user just moved in.
+    /// Reached when a window is below its minimum and cannot itself be moved: either the
+    /// user just placed it here, or no workspace has room for it. Nothing can widen it in
+    /// place, but taking any other window off the workspace widens every column that
+    /// remains -- so the fix is to evict a neighbour instead.
     ///
-    /// The greediest neighbour goes first: it is the one most likely to be cramped here
-    /// anyway, and moving it frees the most room.
-    fn neighbour_to_evict_for(&self, pinned: u32) -> eyre::Result<Option<(usize, String, i32)>> {
+    /// Only a neighbour that has somewhere to go is any use; the first one picked used to
+    /// be the only one tried, and when it had nowhere to go the overlap stayed even though
+    /// another neighbour could have left. Neighbours the user did not just place go
+    /// first, and among them the greediest: it is the one most likely to be cramped here
+    /// anyway, and moving it frees the most room. The window the user just placed is
+    /// evicted only when nothing else can be, because the alternative is leaving two
+    /// windows on top of each other.
+    ///
+    /// Nothing is evicted for a window that would not fit here even on its own: emptying
+    /// the workspace around it would scatter its neighbours and still leave it cramped.
+    fn neighbour_to_evict_for(
+        &self,
+        stuck: usize,
+    ) -> eyre::Result<Option<(usize, String, i32, usize)>> {
         let workspace = self.focused_workspace()?;
-        let mut best: Option<(usize, String, i32)> = None;
+        let pinned = self.user_placed_window();
+
+        let Some(stuck_container) = workspace.containers().get(stuck) else {
+            return Ok(None);
+        };
+
+        let (needed_width, needed_height) = stuck_container
+            .windows()
+            .iter()
+            .filter_map(|window| window.application.name())
+            .fold((0, 0), |(width, height), application| {
+                (
+                    width.max(crate::min_size::get(&application).unwrap_or(0)),
+                    height.max(crate::min_size::get_height(&application).unwrap_or(0)),
+                )
+            });
+
+        let (alone_width, alone_height) =
+            self.cell_size_with_one_more(self.focused_workspace_idx()?, 1);
+
+        if alone_width < needed_width || alone_height < needed_height {
+            return Ok(None);
+        }
+
+        // (placed by the user, minimum width, container, application)
+        let mut neighbours: Vec<(bool, i32, usize, String)> = Vec::new();
 
         for (container_idx, container) in workspace.containers().iter().enumerate() {
-            if container.contains_window(pinned) {
+            if container_idx == stuck {
                 continue;
             }
+
+            let placed = pinned.is_some_and(|id| container.contains_window(id));
 
             for window in container.windows().iter() {
                 let Some(application) = window.application.name() else {
@@ -1253,13 +1330,20 @@ impl WindowManager {
                 // size -- those are the most portable, so they lose the tie.
                 let minimum = crate::min_size::get(&application).unwrap_or(0);
 
-                if best.as_ref().is_none_or(|(_, _, m)| minimum > *m) {
-                    best = Some((container_idx, application, minimum));
-                }
+                neighbours.push((placed, minimum, container_idx, application));
             }
         }
 
-        Ok(best)
+        // Stable, so ties keep the order the containers are laid out in.
+        neighbours.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+
+        for (_, minimum, container_idx, application) in neighbours {
+            if let Some(target_idx) = self.workspace_with_room_for(&application)? {
+                return Ok(Some((container_idx, application, minimum, target_idx)));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Focus a specific window by id, wherever it is on the focused workspace.
@@ -1346,41 +1430,36 @@ impl WindowManager {
         Ok(worst)
     }
 
-    /// The next workspace, in numerical order, that can actually hold a window of
-    /// this width: an empty one for preference, otherwise a quiet one where the
-    /// columns would still be wide enough once this window joins them.
+    /// The next workspace, in numerical order and wrapping round past the last one,
+    /// that can actually hold a window of this application: one where the cells would
+    /// still be wide and tall enough once it joins them.
     ///
     /// The width is worked out from the destination's own layout rather than from a
     /// fixed window count, so this keeps holding when the screen changes -- on a
     /// 2560-wide display the columns drop below 980 at five windows, on a 4K one not
     /// until ten.
-    fn workspace_with_room_for(&self, minimum: i32) -> eyre::Result<Option<usize>> {
-        // The height needed is taken from the application being moved and carried
-        // alongside the width: sending it somewhere with wide columns but short rows
-        // would only repeat the problem on another workspace.
-        let wanted_height = self
-            .focused_workspace()
-            .ok()
-            .and_then(|workspace| {
-                workspace
-                    .containers()
-                    .iter()
-                    .flat_map(|container| container.windows().iter())
-                    .filter_map(|window| window.application.name())
-                    .filter(|application| crate::min_size::get(application).unwrap_or(0) == minimum)
-                    .filter_map(|application| crate::min_size::get_height(&application))
-                    .max()
-            })
-            .unwrap_or(0);
+    fn workspace_with_room_for(&self, application: &str) -> eyre::Result<Option<usize>> {
+        // Both dimensions come from the application being moved: sending it somewhere
+        // with wide columns but short rows would only repeat the problem on another
+        // workspace. This used to work the height out by looking for whichever
+        // application on this workspace shared the width passed in, which picks up the
+        // wrong height as soon as the window being moved is not the one whose width it
+        // was -- a neighbour being evicted, for one.
+        let minimum = crate::min_size::get(application).unwrap_or(0);
+        let wanted_height = crate::min_size::get_height(application).unwrap_or(0);
 
         let monitor = self.focused_monitor().ok_or_eyre("there is no monitor")?;
         let current_idx = monitor.focused_workspace_idx();
         let workspaces = monitor.workspaces();
+        let count = workspaces.len();
 
-        for (idx, workspace) in workspaces.iter().enumerate() {
-            if idx <= current_idx {
+        // Every other workspace, starting with the one after this. Only looking
+        // forward meant nothing ever had room for a window on the last workspace, so
+        // a window that did not fit there was always left overlapping its neighbour.
+        for idx in (1..count).map(|step| (current_idx + step) % count) {
+            let Some(workspace) = workspaces.get(idx) else {
                 continue;
-            }
+            };
 
             // Would it actually fit here, once it is in? That is the only question.
             //
@@ -2257,6 +2336,13 @@ impl WindowManager {
 
             workspace.update()?;
         }
+
+        // Same check as after update_focused_workspace. retile_all lays everything out
+        // without going through it -- at startup, when a display is connected or
+        // removed, on a manual retile, when a work area offset changes -- and a window
+        // that does not fit the cell it has just been given here would otherwise stay
+        // on top of its neighbour until some unrelated event happened to run the check.
+        self.relocate_windows_below_minimum_width()?;
 
         border_manager::destroy_all_borders()?;
 
