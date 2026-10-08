@@ -624,12 +624,6 @@ struct EagerFocus {
 }
 
 #[derive(Parser)]
-struct FocusWindowId {
-    /// Window id, as shown by `komorebic state`
-    id: u32,
-}
-
-#[derive(Parser)]
 struct ScrollingLayoutColumns {
     /// Desired number of visible columns
     count: NonZeroUsize,
@@ -849,9 +843,6 @@ enum SubCommand {
     /// Focus the first managed window matching the given executable
     #[clap(arg_required_else_help = true)]
     EagerFocus(EagerFocus),
-    /// Focus the window with the given id, if it is on the focused workspace
-    #[clap(arg_required_else_help = true)]
-    FocusWindowId(FocusWindowId),
     /// Stack the focused window in the specified direction
     #[clap(arg_required_else_help = true)]
     Stack(Stack),
@@ -2259,9 +2250,6 @@ exit 1
         }
         SubCommand::EagerFocus(args) => {
             send_message(&SocketMessage::EagerFocus(args.exe))?;
-        }
-        SubCommand::FocusWindowId(args) => {
-            send_message(&SocketMessage::FocusWindowId(args.id))?;
         }
         SubCommand::NewWorkspace => {
             send_message(&SocketMessage::NewWorkspace)?;
