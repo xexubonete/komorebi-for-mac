@@ -44,7 +44,7 @@ const NOTIFICATIONS: &[&str] = &[
     // when this fires, the app owner name won't be found, but the can be matched via PID
     kAXUIElementDestroyedNotification,
 ];
-static APPLICATION_NAMES: LazyLock<Mutex<HashMap<i32, Option<String>>>> =
+static APPLICATION_NAMES: LazyLock<Mutex<HashMap<i32, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Forget everything remembered about a process: it has gone, and the next process to be
@@ -179,20 +179,23 @@ impl Application {
     /// [`forget_application`]) so that a reused pid cannot inherit a dead app's name.
     pub fn name(&self) -> Option<String> {
         if let Some(known) = APPLICATION_NAMES.lock().get(&self.process_id) {
-            return known.clone();
+            return Some(known.clone());
         }
 
         let name =
             AccessibilityApi::copy_attribute_value::<CFString>(&self.element, kAXTitleAttribute)
-                .map(|s| s.to_string());
+                .map(|s| s.to_string())?;
 
-        // A miss is worth remembering too: an application that has no name yet is asked
-        // over and over otherwise. It is forgotten below when anything about it changes.
+        // Only an answer is remembered, never a miss. An application that is still
+        // starting can refuse the question (Rider answered CannotComplete), and a
+        // remembered miss outlived that: with no name its windows have no exe, every one
+        // of them was turned away from management for as long as the process lived, and
+        // even `komorebic manage` could not bring them in. A miss is asked again.
         APPLICATION_NAMES
             .lock()
             .insert(self.process_id, name.clone());
 
-        name
+        Some(name)
     }
 
     #[tracing::instrument(skip_all)]
