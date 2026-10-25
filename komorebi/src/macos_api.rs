@@ -181,26 +181,39 @@ impl MacosApi {
         Ok(())
     }
 
-    pub fn update_monitor_work_areas(wm: &mut WindowManager) -> eyre::Result<()> {
+    /// Refresh the size and work area of every monitor from what macOS reports now, and
+    /// say whether any monitor was found to refresh.
+    ///
+    /// Monitors are matched by serial number, the key the rest of the monitor
+    /// reconciliation already uses, and the display id is refreshed from it. The id is
+    /// macOS's handle for the connection, not the display; matching on it here was the one
+    /// place that did not agree with the others about which monitor was which.
+    ///
+    /// Laying the windows out for the new size is left to the caller, which does it once
+    /// for every monitor when the displays have settled. Doing it here, once per display
+    /// reported, retiled the focused workspace in the middle of the change and gave up on
+    /// the first window that did not answer -- which right after a wake is most of them.
+    pub fn update_monitor_work_areas(wm: &mut WindowManager) -> eyre::Result<bool> {
         let all_devices = Self::latest_monitor_information()?;
+        let mut updated = false;
+
         for device in all_devices {
             for monitor in wm.monitors_mut() {
-                if monitor.id == device.id {
+                if monitor.serial_number_id == device.serial_number_id {
+                    monitor.id = device.id;
                     monitor.size = device.size;
                     monitor.work_area_size = device.work_area_size;
+                    updated = true;
+
+                    tracing::info!(
+                        "updated monitor size and work area for monitor {}",
+                        monitor.serial_number_id
+                    );
                 }
-
-                tracing::info!(
-                    "updated monitor size and work area for monitor {}",
-                    monitor.serial_number_id
-                );
             }
-
-            let focus_follows_mouse = wm.mouse_follows_focus;
-            wm.update_focused_workspace(focus_follows_mouse, true)?;
         }
 
-        Ok(())
+        Ok(updated)
     }
 
     pub fn latest_monitor_information() -> Result<Vec<Monitor>, LibraryError> {

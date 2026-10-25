@@ -10,6 +10,7 @@ use crate::notify_subscribers;
 use crate::state::State;
 use crate::window_manager::WindowManager;
 use crossbeam_channel::Receiver;
+use crossbeam_channel::RecvTimeoutError;
 use crossbeam_channel::Sender;
 use dispatch2::DispatchQueue;
 use objc2_core_graphics::CGDirectDisplayID;
@@ -19,6 +20,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use strum::Display;
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, Display)]
@@ -67,6 +72,248 @@ pub fn send_notification(notification: MonitorNotification) {
     }
 }
 
+/// How long the displays have to stay quiet before komorebi believes what they report.
+///
+/// Plugging or unplugging a display is never one event. macOS reports the old display
+/// going, the new one arriving and the desktop changing shape, one callback each, and a TV
+/// can drop and come back while it negotiates: logged on one afternoon, display 2 replaced
+/// by 4 and 4 by 2 again two seconds later. The TV also does not always come back at its
+/// real size -- a komorebi started right after a wake read it at 1920x1080 and kept that,
+/// while it was 3008x1692 again by the next restart. Acting on each report laid the windows
+/// out for a geometry that was gone a moment later, and read windows back while macOS was
+/// still moving them about.
+///
+/// Three seconds of silence is longer than any gap seen inside one of those bursts, and
+/// short enough not to leave the windows out of place for long.
+const DISPLAY_SETTLE: Duration = Duration::from_secs(3);
+
+/// How many times laying the windows out after a display change is tried before giving up.
+///
+/// Right after a wake, Accessibility does not answer for a while: windows report
+/// `InvalidUIElement` even though nothing about them has changed. Measured: the TV came
+/// back five seconds after the unlock, the two layouts that followed both failed that way,
+/// and nothing tried again.
+const LAYOUT_ATTEMPTS: usize = 3;
+
+/// When macOS last said anything at all about the displays.
+///
+/// Set from the reconfiguration callback itself, on every call, including the ones that
+/// announce a change before it happens and the ones that never reach this thread. That
+/// covers the moment between the callback and the notification being picked up here.
+static LAST_DISPLAY_EVENT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Whether a display change has been received and its windows not laid out again yet.
+static RECONCILING: AtomicBool = AtomicBool::new(false);
+
+/// Note that macOS has just reported something about the displays.
+pub fn note_display_event() {
+    *LAST_DISPLAY_EVENT.lock() = Some(Instant::now());
+}
+
+/// Whether the displays are changing, or have changed and the windows are not yet laid
+/// out for them.
+///
+/// Until then, what the windows report says nothing about the windows. Their sizes are
+/// the ones the old display gave them, or the ones macOS clamped them to while moving
+/// them off it, and the work area komorebi lays them out in may still be the old screen's.
+/// Two things went wrong because nothing held back in that window:
+///
+/// - Minimum sizes were learned from it. A window asked for a column of the new geometry
+///   that still has the old one's width reports that width back, which reads exactly like
+///   an application refusing to shrink: Ghostty "refused" 836 by staying at 1276, the
+///   column it had a second earlier, in the pass that laid it out for a resolution change.
+///   The minimum only ever grows: Notion, Mail and Ghostty once stood at 1484, half the
+///   TV, and Terminal at 3005, all of it, until they were zeroed by hand.
+/// - Windows were moved to other workspaces on the strength of it. BetterDisplay was sent
+///   to workspace 2 by the very pass that laid it out for a resolution the user had just
+///   switched to.
+///
+/// A display change is komorebi's to lay out, once, when it has settled; it is never a
+/// reason to move a window to another workspace.
+pub fn display_is_settling() -> bool {
+    RECONCILING.load(Ordering::SeqCst)
+        || LAST_DISPLAY_EVENT
+            .lock()
+            .is_some_and(|at| at.elapsed() < DISPLAY_SETTLE)
+}
+
+/// Holds [`RECONCILING`] up while one display change is handled, however that ends.
+struct Reconciling;
+
+impl Reconciling {
+    fn begin() -> Self {
+        RECONCILING.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Reconciling {
+    fn drop(&mut self) {
+        RECONCILING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Wait out a burst of display events and return the one notification that stands for it.
+///
+/// See [`DISPLAY_SETTLE`]. A display arriving or leaving anywhere in the burst makes the
+/// whole burst one: that path refreshes the size of every display too, and not the other
+/// way round.
+///
+/// While the screen is covered -- asleep, locked, behind the screensaver -- Accessibility
+/// cannot reach the windows, so laying them out would only fail. The wait carries on until
+/// it lifts. Returns `None` once the channel has closed.
+fn wait_for_displays_to_settle(
+    receiver: &Receiver<MonitorNotification>,
+    first: MonitorNotification,
+) -> Option<MonitorNotification> {
+    let mut settled = first;
+    let mut events = 1;
+
+    loop {
+        match receiver.recv_timeout(DISPLAY_SETTLE) {
+            Ok(next) => {
+                events += 1;
+
+                if matches!(next, MonitorNotification::DisplayConnectionChange(_))
+                    || matches!(settled, MonitorNotification::Resize(_))
+                {
+                    settled = next;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) if crate::reaper::screen_is_covered() => {}
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+
+    // Grep marker: DISPLAY.
+    tracing::warn!("DISPLAY settled after {events} report(s); handling it as {settled}");
+
+    Some(settled)
+}
+
+/// Hand each monitor whose display has gone to a display that has taken its place.
+///
+/// This is the MacBook in clamshell mode: the TV and the built-in panel are never on at
+/// the same time, so unplugging one and waking on the other takes one display away and
+/// brings one in. The count stays at one, and "monitor counts match, reconciliation not
+/// required" was the end of it. Komorebi went on laying windows out for a screen that was
+/// no longer there -- the TV's 3004x1668 on the 1680-wide panel, windows hanging off the
+/// edge and over each other; the panel's 1676 on the TV, everything crammed into the left
+/// half, and the other workspaces parked at the panel's right edge, which on the TV is the
+/// middle of the screen -- until `rset`.
+/// Restarting on every wake used to hide this; the wake hook stopped restarting once
+/// komorebi learned to keep its windows through a sleep.
+///
+/// The workspaces belong to the user, not to a display. The monitor keeps them, and
+/// every window on them stays where it is; it takes on the identity and the geometry of
+/// the display it is on now. Dropping the old monitor and starting a fresh one instead
+/// would let go of every window and pick each one up again as if it had just opened, on
+/// whichever workspace happened to be in front.
+fn take_over_replaced_displays(wm: &mut WindowManager, attached_devices: &[Monitor]) {
+    let mut newcomers = attached_devices
+        .iter()
+        .filter(|device| {
+            !wm.monitors()
+                .iter()
+                .any(|monitor| monitor.serial_number_id == device.serial_number_id)
+        })
+        .collect::<Vec<_>>()
+        .into_iter();
+
+    for monitor in wm.monitors_mut() {
+        if attached_devices
+            .iter()
+            .any(|device| device.serial_number_id == monitor.serial_number_id)
+        {
+            continue;
+        }
+
+        let Some(device) = newcomers.next() else {
+            break;
+        };
+
+        tracing::warn!(
+            "DISPLAY {} ({}) has been replaced by {} ({}, work area {}x{}); its workspaces stay as they are",
+            monitor.device,
+            monitor.serial_number_id,
+            device.device,
+            device.serial_number_id,
+            device.work_area_size.right,
+            device.work_area_size.bottom
+        );
+
+        monitor.id = device.id;
+        monitor.device = device.device.clone();
+        monitor.serial_number_id = device.serial_number_id.clone();
+        monitor.size = device.size;
+        monitor.work_area_size = device.work_area_size;
+    }
+}
+
+/// Lay every monitor out again for the display it is on now.
+///
+/// The focused workspace goes into the new work area, and the windows of every other one
+/// are parked again beside the new screen's edge: parked beside the old one, they can be
+/// sitting in the middle of the new one. The rest are laid out as each one is shown, since
+/// laying out a workspace means putting its windows on screen.
+///
+/// Nothing komorebi remembers about where windows are survives a display change: macOS
+/// moves and shrinks windows itself when a display goes, and the reports of that can be
+/// lost while the machine sleeps. Trusting those records here skipped windows that had
+/// moved and parked others from a position they were no longer in.
+///
+/// Focus is left alone: the displays changing is not the user asking for anything.
+fn lay_out_for_new_geometry(wm: &Arc<Mutex<WindowManager>>) {
+    for attempt in 1..=LAYOUT_ATTEMPTS {
+        while crate::reaper::screen_is_covered() {
+            std::thread::sleep(DISPLAY_SETTLE);
+        }
+
+        let failed = {
+            let mut wm = wm.lock();
+            let mouse_follows_focus = wm.mouse_follows_focus;
+            let mut failed = None;
+
+            crate::window::forget_all_positions();
+
+            for monitor in wm.monitors_mut() {
+                tracing::warn!(
+                    "DISPLAY laying out {} ({}) for a work area of {}x{}",
+                    monitor.device,
+                    monitor.serial_number_id,
+                    monitor.work_area_size.right,
+                    monitor.work_area_size.bottom
+                );
+
+                if let Err(error) =
+                    monitor.load_focused_workspace_without_taking_focus(mouse_follows_focus)
+                {
+                    failed = Some(error);
+                }
+            }
+
+            if let Err(error) = border_manager::destroy_all_borders() {
+                tracing::error!("failed to take the borders down after a display change: {error}");
+            }
+
+            failed
+        };
+
+        let Some(error) = failed else {
+            return;
+        };
+
+        tracing::warn!(
+            "DISPLAY could not lay everything out (attempt {attempt} of {LAYOUT_ATTEMPTS}): {error}"
+        );
+
+        if attempt < LAYOUT_ATTEMPTS {
+            std::thread::sleep(DISPLAY_SETTLE);
+        }
+    }
+}
+
 pub fn listen_for_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result<()> {
     std::thread::spawn(move || {
         loop {
@@ -95,23 +342,39 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
 
     let receiver = event_rx();
 
-    'receiver: for notification in receiver {
+    'receiver: for first in receiver.iter() {
+        // Held until this change has been laid out, however the handling below ends. See
+        // [`display_is_settling`].
+        let _reconciling = Reconciling::begin();
+
+        let Some(notification) = wait_for_displays_to_settle(&receiver, first) else {
+            break 'receiver;
+        };
+
         let initial_state = {
             let wm = wm.lock();
             State::from(wm.as_ref())
         };
+
+        // Whether the windows can have been left laid out for a geometry that is no longer
+        // there. Adding or removing a monitor lays everything out on its own path below; a
+        // display changing size, or taking another's place, is laid out here.
+        let mut lay_out_again = false;
 
         match notification {
             MonitorNotification::Resize(_display_id) => {
                 tracing::debug!("handling resize notification");
                 DispatchQueue::main().exec_sync(|| {
                     let mut wm = wm.lock();
-                    if let Err(error) = MacosApi::update_monitor_work_areas(&mut wm) {
-                        tracing::error!("failed to update monitor work areas: {error}");
+                    match MacosApi::update_monitor_work_areas(&mut wm) {
+                        Ok(updated) => lay_out_again = updated,
+                        Err(error) => {
+                            tracing::error!("failed to update monitor work areas: {error}")
+                        }
                     }
                 });
             }
-            MonitorNotification::DisplayConnectionChange(_) => {
+            MonitorNotification::DisplayConnectionChange(_) => 'connection: {
                 tracing::debug!("handling display connection change notification");
 
                 let mut attached_devices = vec![];
@@ -145,9 +408,13 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 }
 
                 if initial_monitor_count == attached_devices.len() {
-                    tracing::debug!("monitor counts match, reconciliation not required");
-                    drop(wm);
-                    continue 'receiver;
+                    // Same number of displays, which is not the same as the same displays:
+                    // see take_over_replaced_displays. Laid out again either way, because a
+                    // display that came back can have come back at another size, and that
+                    // part of the change was folded into this one while it settled.
+                    take_over_replaced_displays(&mut wm, &attached_devices);
+                    lay_out_again = true;
+                    break 'connection;
                 }
 
                 if attached_devices.is_empty() {
@@ -557,6 +824,10 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                     }
                 }
             }
+        }
+
+        if lay_out_again {
+            lay_out_for_new_geometry(&wm);
         }
 
         {

@@ -1027,6 +1027,15 @@ impl WindowManager {
     /// minimum, so the layout is recomputed after each move and the loop stops as
     /// soon as everything fits. A window that has been moved stays where it was put.
     pub fn relocate_windows_below_minimum_width(&mut self) -> eyre::Result<()> {
+        // Not while the displays are changing, or before the windows have been laid out
+        // for the new ones: a column is too narrow for an app then only because it was
+        // worked out for a screen that is going or not there yet, and a window sent away
+        // on the strength of it stays on the other workspace after the display it did not
+        // fit has gone again. See monitor_reconciliator::display_is_settling.
+        if crate::monitor_reconciliator::display_is_settling() {
+            return Ok(());
+        }
+
         // Moving a container re-runs the layout, which lands back here. Let the
         // outermost call do the work and have the nested ones return immediately.
         if RELOCATION_IN_PROGRESS.swap(true, Ordering::SeqCst) {
@@ -2338,10 +2347,11 @@ impl WindowManager {
         }
 
         // Same check as after update_focused_workspace. retile_all lays everything out
-        // without going through it -- at startup, when a display is connected or
-        // removed, on a manual retile, when a work area offset changes -- and a window
-        // that does not fit the cell it has just been given here would otherwise stay
-        // on top of its neighbour until some unrelated event happened to run the check.
+        // without going through it -- at startup, on a manual retile, when a work area
+        // offset changes -- and a window that does not fit the cell it has just been given
+        // here would otherwise stay on top of its neighbour until some unrelated event
+        // happened to run the check. When a display is connected or removed it does not
+        // run: see relocate_windows_below_minimum_width.
         self.relocate_windows_below_minimum_width()?;
 
         border_manager::destroy_all_borders()?;

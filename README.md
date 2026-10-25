@@ -32,6 +32,12 @@ on a real desk with a laptop screen and an external monitor.
   held through a lock and the latch lifts only once the model is whole again.
 - **Startup pulls windows out of macOS full screen** before enumerating them, instead of
   leaving them in a space komorebi can't reach.
+- **Swapping displays keeps every window on its workspace.** With the lid closed, the TV
+  and the built-in panel take turns: one goes, the other comes, and the count stays at one.
+  Upstream took a matching count to mean nothing had changed and kept laying windows out
+  for the screen that had gone. The monitor now takes on the display that replaced it, and
+  once the displays have been quiet for three seconds (and the screen is unlocked) the
+  visible workspace is laid out for it and the others are parked beside its edge.
 
 ### Windows that refuse to be resized
 
@@ -45,6 +51,8 @@ call succeeds, the window keeps its size, and it overlaps whatever sits next to 
   left overlapping its neighbours.
 - What is stored is the *cause* (this app will not go below N points), not the situation
   it broke in — so nothing is relearned when a different monitor is plugged in.
+- **Nothing is learned and nothing is relocated while the displays are changing.** A window
+  still sized for the screen that just went reads exactly like one refusing to shrink.
 
 ### Focus follows mouse
 

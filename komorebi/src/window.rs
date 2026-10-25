@@ -205,6 +205,16 @@ pub fn forget_position(window_id: u32) {
     SELF_MOVE_ECHOES.lock().remove(&window_id);
 }
 
+/// Forget where every window was: the displays have changed under all of them.
+///
+/// When a display goes away or changes size, macOS moves and shrinks the windows on it
+/// itself, and the reports of that can be lost while the machine is asleep. What komorebi
+/// remembers having done is then no longer true of any window, parked ones included.
+pub fn forget_all_positions() {
+    CONFIRMED_POSITIONS.lock().clear();
+    SELF_MOVE_ECHOES.lock().clear();
+}
+
 /// A window that has gone: nothing remembered about it is worth keeping, and the next
 /// window to be handed this id is a different one.
 pub fn forget_window(window_id: u32) {
@@ -1171,7 +1181,18 @@ impl Window {
                             self.id
                         );
                     } else if refused_width > 0 || refused_height > 0 {
-                        crate::min_size::record(name, refused_width, refused_height);
+                        // Nor does a window's refusal while the displays are changing: it
+                        // can still have the size the old display gave it, which reads as
+                        // refusing anything smaller. See
+                        // monitor_reconciliator::display_is_settling.
+                        if crate::monitor_reconciliator::display_is_settling() {
+                            tracing::warn!(
+                                "SELFMOVE not learning a minimum for {name} from window={} while the displays are changing",
+                                self.id
+                            );
+                        } else {
+                            crate::min_size::record(name, refused_width, refused_height);
+                        }
                     }
                 }
             }

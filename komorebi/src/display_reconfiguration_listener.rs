@@ -14,6 +14,10 @@ unsafe extern "C-unwind" fn callback(
     flags: CGDisplayChangeSummaryFlags,
     _user_info: *mut c_void,
 ) {
+    // Before anything else, and for every call: the one announcing a change before it
+    // happens included. See monitor_reconciliator::display_is_settling.
+    monitor_reconciliator::note_display_event();
+
     if flags.contains(CGDisplayChangeSummaryFlags::DesktopShapeChangedFlag) {
         tracing::debug!("display: {display_id} resized");
         monitor_reconciliator::send_notification(MonitorNotification::Resize(display_id));
