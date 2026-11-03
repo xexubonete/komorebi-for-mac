@@ -418,7 +418,9 @@ impl MacosApi {
 
         let mut monitor_size_map = HashMap::new();
         let mut monitor_focused_ws = HashMap::new();
-        let mut monitor_window_map: HashMap<usize, Vec<Window>> = HashMap::new();
+        // Keyed by the monitor the window sits on; None for a window outside every
+        // monitor, which is only kept if the session below claims it.
+        let mut monitor_window_map: HashMap<Option<usize>, Vec<Window>> = HashMap::new();
         let mut valid_window_count = 0;
 
         for (idx, monitor) in wm.monitors.elements().iter().enumerate() {
@@ -436,51 +438,59 @@ impl MacosApi {
 
                 if let Some(info) = raw.validated() {
                     let window_rect = Rect::from(info.bounds);
-                    let mut on_a_monitor = false;
+                    let mut monitors_hit: Vec<Option<usize>> = monitor_size_map
+                        .iter()
+                        .filter(|(_, size)| size.contains(&window_rect))
+                        .map(|(idx, _)| Some(*idx))
+                        .collect();
 
-                    for (monitor_idx, monitor_size) in &monitor_size_map {
-                        if monitor_size.contains(&window_rect) {
-                            on_a_monitor = true;
-                            let application = match wm.applications.entry(info.owner_pid) {
-                                Entry::Occupied(entry) => entry.into_mut(),
-                                Entry::Vacant(vacant) => {
-                                    let mut application = Application::new(info.owner_pid)?;
-                                    // TODO: this ain't great, fix this OBS workaround
-                                    application.observe(&wm.run_loop, None);
-                                    vacant.insert(application)
-                                }
-                            };
-
-                            match application.window_by_id(info.window_id) {
-                                Some(window) => {
-                                    let mut rule_debug = RuleDebug::default();
-                                    if window.should_manage(None, &mut rule_debug)? {
-                                        window.observe(&wm.run_loop, None)?;
-                                        monitor_window_map
-                                            .entry(*monitor_idx)
-                                            .or_default()
-                                            .push(window);
-                                        valid_window_count += 1
-                                    } else {
-                                        tracing::warn!(
-                                            "SKIP {raw_owner:?} id={} should_manage said no",
-                                            info.window_id
-                                        );
-                                    }
-                                }
-                                None => tracing::warn!(
-                                    "SKIP {raw_owner:?} id={} accessibility does not know it",
-                                    info.window_id
-                                ),
-                            }
-                        }
+                    // A window outside every monitor is usually one komorebi itself parked
+                    // off-screen (x = -width) to hide a workspace that was not showing. After
+                    // a crash or an unclean stop nothing brings it back, and skipping it here
+                    // left it lost and unmanaged: Rider on Oct 5, then Ghostty, Brave,
+                    // WhatsApp and Preview on Nov 3. So it goes through like the others and
+                    // the session decides below: if it remembers the window, it is adopted
+                    // into its workspace, and the layout (or hiding) places it again.
+                    if monitors_hit.is_empty() {
+                        monitors_hit.push(None);
                     }
 
-                    if !on_a_monitor {
-                        tracing::warn!(
-                            "SKIP {raw_owner:?} id={} outside every monitor {window_rect:?}",
-                            info.window_id
-                        );
+                    for monitor_idx in &monitors_hit {
+                        let application = match wm.applications.entry(info.owner_pid) {
+                            Entry::Occupied(entry) => entry.into_mut(),
+                            Entry::Vacant(vacant) => {
+                                let mut application = Application::new(info.owner_pid)?;
+                                // TODO: this ain't great, fix this OBS workaround
+                                application.observe(&wm.run_loop, None);
+                                vacant.insert(application)
+                            }
+                        };
+
+                        match application.window_by_id(info.window_id) {
+                            Some(window) => {
+                                let mut rule_debug = RuleDebug::default();
+                                if window.should_manage(None, &mut rule_debug)? {
+                                    // Off-screen ones are observed only once adopted.
+                                    if monitor_idx.is_some() {
+                                        window.observe(&wm.run_loop, None)?;
+                                    }
+                                    monitor_window_map
+                                        .entry(*monitor_idx)
+                                        .or_default()
+                                        .push(window);
+                                    valid_window_count += 1
+                                } else {
+                                    tracing::warn!(
+                                        "SKIP {raw_owner:?} id={} should_manage said no",
+                                        info.window_id
+                                    );
+                                }
+                            }
+                            None => tracing::warn!(
+                                "SKIP {raw_owner:?} id={} accessibility does not know it",
+                                info.window_id
+                            ),
+                        }
                     }
                 } else {
                     // At debug: these are dozens of tiny system windows -- menu bar
@@ -515,9 +525,14 @@ impl MacosApi {
             None => tracing::warn!("STARTUP no session to restore from"),
         }
 
+        // Off-screen windows last, so a title match never takes a session entry away
+        // from a window that is actually on a screen.
+        let mut monitor_window_map: Vec<_> = monitor_window_map.into_iter().collect();
+        monitor_window_map.sort_by_key(|(geom, _)| geom.is_none());
+
         for (geom_monitor_idx, windows) in monitor_window_map {
-            let fallback_ws = monitor_focused_ws
-                .get(&geom_monitor_idx)
+            let fallback_ws = geom_monitor_idx
+                .and_then(|idx| monitor_focused_ws.get(&idx))
                 .copied()
                 .unwrap_or(0);
 
@@ -535,11 +550,33 @@ impl MacosApi {
                     })
                 });
 
-                let (target_monitor, target_ws, target_slot) = session
+                let remembered = session
                     .as_mut()
                     .and_then(|s| s.take_match(window.id, &exe, &title))
-                    .filter(|(m, _, _)| wm.monitors.elements().get(*m).is_some())
-                    .unwrap_or((geom_monitor_idx, fallback_ws, usize::MAX));
+                    .filter(|(m, _, _)| wm.monitors.elements().get(*m).is_some());
+
+                let (target_monitor, target_ws, target_slot) = match (remembered, geom_monitor_idx)
+                {
+                    (Some(target), _) => target,
+                    (None, Some(geom)) => (geom, fallback_ws, usize::MAX),
+                    // Outside every monitor and not in the session: it may be legitimately
+                    // somewhere else, so it is left alone as before.
+                    (None, None) => {
+                        tracing::warn!(
+                            "SKIP {exe:?} id={} outside every monitor and not in the session",
+                            window.id
+                        );
+                        continue;
+                    }
+                };
+
+                if geom_monitor_idx.is_none() {
+                    tracing::warn!(
+                        "STARTUP adopting off-screen window {} ({exe:?}) from the session",
+                        window.id
+                    );
+                    window.observe(&wm.run_loop, None)?;
+                }
 
                 // One line per window. At debug: the summary above is what catches a
                 // session that failed to restore, and that one stays visible.
