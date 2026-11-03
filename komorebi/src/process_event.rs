@@ -69,6 +69,8 @@ pub fn listen_for_events(wm: Arc<Mutex<WindowManager>>) {
         tracing::info!("listening");
         loop {
             if let Ok(event) = receiver.recv() {
+                window_manager_event_listener::note_dequeued(&event);
+
                 // DIAGNOSTIC: the queue only announces itself once it is already
                 // full and dropping. Logging the backlog above a threshold shows
                 // it filling up, and how long it takes to drain afterwards.

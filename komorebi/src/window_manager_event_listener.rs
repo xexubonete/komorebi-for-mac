@@ -1,6 +1,11 @@
+use crate::accessibility::notification_constants::AccessibilityNotification;
+use crate::window_manager_event::SystemNotification;
 use crate::window_manager_event::WindowManagerEvent;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
+use parking_lot::Mutex;
+use std::collections::HashSet;
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 
 static CHANNEL: OnceLock<(Sender<WindowManagerEvent>, Receiver<WindowManagerEvent>)> =
@@ -62,6 +67,43 @@ fn is_replaceable(event: &WindowManagerEvent) -> bool {
 /// take one item off a full queue, and short enough to be invisible.
 const UNREPLACEABLE_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// Processes that already have a main-window report waiting in the queue.
+///
+/// A main-window report only says "look at this application's main window again": the
+/// handler asks the application which window that is when it gets there, and ignores
+/// the window the report arrived with. So a second report from the same process,
+/// queued behind the first, says nothing the first will not find out anyway.
+///
+/// Autofirma (Java) with its signature dialog open was measured announcing a new main
+/// window 120-150 times a second, with komorebi paused as well as running, for minutes
+/// on end. Each report costs the consumer two retiles, so the queue sat at 256/256;
+/// every other notification waited 5ms on the main run loop and was then dropped. A PDF
+/// opened in Preview during that time stayed out of the layout for 46 seconds. Letting
+/// one report per process wait in the queue keeps such an application to a single slot,
+/// and costs nothing for the ones that behave.
+static QUEUED_MAIN_WINDOW_CHANGES: LazyLock<Mutex<HashSet<i32>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// The process a main-window report is about, if this is one.
+fn main_window_change_process(event: &WindowManagerEvent) -> Option<i32> {
+    match event {
+        WindowManagerEvent::FocusChange(
+            SystemNotification::Accessibility(AccessibilityNotification::AXMainWindowChanged),
+            process_id,
+            _,
+        ) => Some(*process_id),
+        _ => None,
+    }
+}
+
+/// Called by the consumer as it takes `event` off the queue: from here on, a new
+/// main-window report from the same process may describe something this one did not.
+pub fn note_dequeued(event: &WindowManagerEvent) {
+    if let Some(process_id) = main_window_change_process(event) {
+        QUEUED_MAIN_WINDOW_CHANGES.lock().remove(&process_id);
+    }
+}
+
 pub fn send_notification(notification: WindowManagerEvent) {
     // Geometry settling: the next one supersedes this, so a full queue can simply
     // swallow it.
@@ -78,10 +120,25 @@ pub fn send_notification(notification: WindowManagerEvent) {
         return;
     }
 
+    // Already waiting for this process: that report will read the same main window.
+    let main_window_change = main_window_change_process(&notification);
+    if let Some(process_id) = main_window_change
+        && !QUEUED_MAIN_WINDOW_CHANGES.lock().insert(process_id)
+    {
+        tracing::trace!(
+            "coalescing main-window report for process {process_id} into the one already queued"
+        );
+        return;
+    }
+
     // Everything else says something happened that nothing will say again. Wait briefly
     // for room rather than discarding it: dropped Destroy events were leaving borders on
     // screen for windows that had already closed.
     if let Err(error) = event_tx().send_timeout(notification, UNREPLACEABLE_SEND_TIMEOUT) {
+        if let Some(process_id) = main_window_change {
+            QUEUED_MAIN_WINDOW_CHANGES.lock().remove(&process_id);
+        }
+
         tracing::warn!(
             "channel still full after {}ms; dropping unreplaceable notification: {}",
             UNREPLACEABLE_SEND_TIMEOUT.as_millis(),
