@@ -3,6 +3,7 @@ use crate::LibraryError;
 use crate::accessibility::AccessibilityApi;
 use crate::accessibility::attribute_constants::kAXFocusedApplicationAttribute;
 use crate::accessibility::attribute_constants::kAXFocusedWindowAttribute;
+use crate::accessibility::attribute_constants::kAXFullScreenAttribute;
 use crate::accessibility::attribute_constants::kAXPositionAttribute;
 use crate::accessibility::attribute_constants::kAXSizeAttribute;
 use crate::accessibility::error::AccessibilityApiError;
@@ -32,6 +33,7 @@ use objc2_app_kit::NSWorkspace;
 use objc2_application_services::AXUIElement;
 use objc2_application_services::AXValue;
 use objc2_application_services::AXValueType;
+use objc2_core_foundation::CFBoolean;
 use objc2_core_foundation::CFDictionary;
 use objc2_core_foundation::CFRetained;
 use objc2_core_foundation::CFString;
@@ -757,6 +759,24 @@ impl MacosApi {
 
             AccessibilityApi::copy_attribute_value::<AXUIElement>(&app, kAXFocusedWindowAttribute)
         }
+    }
+
+    /// Whether this window is in the macOS full-screen mode.
+    ///
+    /// Not the same as a window filling the screen: full screen moves the window onto a
+    /// Space of its own, where komorebi has no say over it at all.
+    pub fn is_native_fullscreen(element: &AXUIElement) -> bool {
+        AccessibilityApi::copy_attribute_value::<CFBoolean>(element, kAXFullScreenAttribute)
+            .is_some_and(|value| value.as_bool())
+    }
+
+    /// Whether the window that has keyboard focus is in the macOS full-screen mode --
+    /// that is, whether the user is looking at a full-screen Space right now.
+    ///
+    /// Three Accessibility round trips (application, window, attribute), so it belongs on
+    /// the paths that are about to move focus or the desktop, not on every event.
+    pub fn foreground_is_native_fullscreen() -> bool {
+        Self::foreground_window().is_some_and(|window| Self::is_native_fullscreen(&window))
     }
 
     pub fn cursor_pos() -> CGPoint {

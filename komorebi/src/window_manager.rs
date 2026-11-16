@@ -1723,6 +1723,46 @@ impl WindowManager {
         true
     }
 
+    /// Whether the user is in a macOS full-screen Space right now -- a video, a game --
+    /// where komorebi has to keep its hands off everything.
+    ///
+    /// macOS moves a full-screen window onto a Space of its own, and focusing or raising
+    /// any window that lives on the main Space switches straight back to it. So anything
+    /// komorebi does on its own initiative -- the cursor entering a tile, following a
+    /// focus report to another workspace, handing focus to a neighbour -- drags the user
+    /// out of what they are watching, and leaves them on a workspace with no idea where
+    /// it went.
+    ///
+    /// Measured on 2026-11-14 with YouTube in Brave: the window went full screen at
+    /// 16:46:21.4, and 0.9s later `FOLLOWMOUSE entered 27443` -- the tile that sat under
+    /// the cursor on the main Space, invisible behind the video -- focused it and macOS
+    /// switched back. The user went back to the video at 16:46:32.7 and was pulled out
+    /// again within 140ms (see `only_out_of_sight_in_fullscreen` in the workspace), and
+    /// while they were still looking for it, `RECONCILE acting: 0/0 -> 0/1` at 16:46:48.4
+    /// changed workspace after Brave's main window.
+    ///
+    /// Two ways of telling, because each one misses part of it:
+    ///
+    /// * The Space being looked at is not the one komorebi started on. That is what
+    ///   `process_event` and `process_command` already check before doing anything, but
+    ///   it only turns true once the switch animation has finished, about a second after
+    ///   the window went full screen -- and some of komorebi runs on threads that never
+    ///   asked at all.
+    /// * The window with keyboard focus says it is in full screen. True from the moment
+    ///   the transition starts: komorebi's own placement pass already saw AXFullScreen on
+    ///   the window at 16:46:21.5, eight tenths of a second before the cursor pulled the
+    ///   user out.
+    ///
+    /// The second costs three Accessibility round trips, so this is for the moments
+    /// komorebi is about to move focus or the desktop, not for every event.
+    pub fn native_fullscreen_in_front(&self) -> bool {
+        let away_from_our_space = self
+            .space_id
+            .is_some_and(|ours| current_space_id().is_some_and(|now| now != ours));
+
+        away_from_our_space || MacosApi::foreground_is_native_fullscreen()
+    }
+
     /// Whether the index still describes where this window lives.
     ///
     /// `known_window_ids` is a snapshot. `update_known_window_ids` rebuilds it whole, but

@@ -1039,6 +1039,14 @@ impl WindowManager {
                     .map(|workspace| workspace.containers().len())
                     .unwrap_or(0)
                     < windows_before
+                    // Not while a full-screen Space is in front: focusing anything on
+                    // the main Space makes macOS switch back to it, out of the video.
+                    // A reap followed by this focus is what pulled the user out on
+                    // 2026-11-14 (16:46:32.8, focus on 27443 43ms after `REAPED`);
+                    // that reap no longer happens, but another window of the same
+                    // application closing while the video plays would do the same. See
+                    // `native_fullscreen_in_front`.
+                    && !self.native_fullscreen_in_front()
                 {
                     // Windows are still here, so focus belongs to one of them.
                     //

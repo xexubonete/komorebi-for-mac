@@ -289,6 +289,42 @@ fn is_ours_to_place(window: &Window) -> bool {
     !window.is_native_fullscreen()
 }
 
+/// Whether a window its application no longer lists is only out of sight, in full screen.
+///
+/// The window list an application hands over Accessibility only holds the windows on the
+/// Space being looked at, and a window in macOS full screen lives on a Space of its own.
+/// Seen from the main Space it is simply not on the list. Read as "the window has gone",
+/// that took the window out of its container as soon as a video went full screen -- and
+/// the reap is what dragged the user out of the video: the workspace had one window fewer,
+/// so komorebi focused the neighbour left behind, and focusing a window on the main Space
+/// makes macOS switch back to the main Space.
+///
+/// Measured on 2026-11-14, YouTube in Brave on the 3008x1662 display. At 16:46:21.4 the
+/// window (27463) took the whole display and went full screen. At 16:46:32.7 the user went
+/// back to it; komorebi put it back in its container, and 90ms later logged `REAPED 1
+/// window(s) of process 28476; accessibility still knows [27443, 25715]` -- 27463 missing,
+/// while still answering AXFullScreen=true -- and focused 27443, its neighbour. The video
+/// was gone again. The same reap had already happened at 16:46:22.7.
+///
+/// The window's own element still answers, so it is asked directly: still in full screen
+/// means still there, and it keeps its place in the container, which is where it goes
+/// back to when full screen ends.
+fn only_out_of_sight_in_fullscreen(window: &Window) -> bool {
+    let fullscreen = window.is_native_fullscreen();
+
+    if fullscreen {
+        // TRACE: a window kept despite its application not listing it. Grep marker:
+        // FULLSCREEN.
+        tracing::warn!(
+            "FULLSCREEN not reaping window {} ({:?}): it is on its own space, where its application's window list cannot see it",
+            window.id,
+            window.exe().unwrap_or_default()
+        );
+    }
+
+    fullscreen
+}
+
 fn place_in_parallel(to_place: Vec<(Window, Rect)>) {
     let to_place: Vec<(Window, Rect)> = to_place
         .into_iter()
@@ -684,7 +720,9 @@ impl Workspace {
             if let Some(focused_window) = container.focused_window()
                 && focused_window.application.process_id == process_id
             {
-                if !valid_window_ids.contains(&focused_window.id) {
+                if !valid_window_ids.contains(&focused_window.id)
+                    && !only_out_of_sight_in_fullscreen(focused_window)
+                {
                     if let Ok(rect) = MacosApi::window_rect(&focused_window.element) {
                         tracing::debug!(
                             "reaping window {} ({}): rect = {:?}",
@@ -709,6 +747,7 @@ impl Workspace {
         {
             if focused_window.application.process_id == process_id
                 && !valid_window_ids.contains(&focused_window.id)
+                && !only_out_of_sight_in_fullscreen(focused_window)
             {
                 if let Ok(rect) = MacosApi::window_rect(&focused_window.element) {
                     tracing::debug!(
@@ -730,7 +769,8 @@ impl Workspace {
 
         for window in self.floating_windows() {
             if window.application.process_id == process_id {
-                if !valid_window_ids.contains(&window.id) {
+                if !valid_window_ids.contains(&window.id) && !only_out_of_sight_in_fullscreen(window)
+                {
                     if let Ok(rect) = MacosApi::window_rect(&window.element) {
                         tracing::debug!(
                             "reaping floating window {} ({}): rect = {:?}",

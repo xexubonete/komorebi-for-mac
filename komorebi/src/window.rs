@@ -937,13 +937,10 @@ impl Window {
         None
     }
 
-    /// Whether this window is in the macOS full-screen mode.
-    ///
-    /// Not the same as a window filling the screen: full screen moves the window onto a
-    /// Space of its own, where komorebi has no say over it at all.
+    /// Whether this window is in the macOS full-screen mode. See
+    /// [`MacosApi::is_native_fullscreen`].
     pub fn is_native_fullscreen(&self) -> bool {
-        AccessibilityApi::copy_attribute_value::<CFBoolean>(&self.element, kAXFullScreenAttribute)
-            .is_some_and(|value| value.as_bool())
+        MacosApi::is_native_fullscreen(&self.element)
     }
 
     /// Bring a window back out of the macOS full-screen mode.

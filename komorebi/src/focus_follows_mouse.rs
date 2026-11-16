@@ -204,6 +204,18 @@ pub fn listen(wm: Arc<Mutex<WindowManager>>) {
                     continue;
                 }
 
+                // Not while a full-screen Space is in front. The tiles of the main Space
+                // keep their rectangles in the layout, right under the video, so moving
+                // the mouse over the video "entered" one of them and focusing it made
+                // macOS switch back to the main Space: 0.9s after a YouTube video went
+                // full screen on 2026-11-14 (16:46:22.3, `FOLLOWMOUSE entered 27443`).
+                // The full-screen window stays in its container now, so the check just
+                // above no longer stops this on its own. See
+                // `WindowManager::native_fullscreen_in_front`.
+                if wm.native_fullscreen_in_front() {
+                    continue;
+                }
+
                 wm.focus_monitor(monitor_idx).ok();
 
                 if let Ok(workspace) = wm.focused_workspace_mut() {

@@ -335,6 +335,31 @@ pub fn handle_notifications(wm: Arc<Mutex<WindowManager>>) -> color_eyre::Result
                 continue;
             }
 
+            // Not while a full-screen Space is in front: changing workspace focuses a
+            // window on the main Space, and macOS switches back there to show it, out of
+            // the video the user is watching. A browser with a video in full screen keeps
+            // announcing a main window, often one that lives on another workspace: on
+            // 2026-11-09, 1m43s after a YouTube video in Brave went full screen, Brave
+            // named 22030 and komorebi followed it, `RECONCILE acting: 0/0 -> 0/4`
+            // (18:43:57.7), with the video still in full screen. Asked here, at the last
+            // moment, because the report was raised a while ago and the question is
+            // whether the user is in full screen *now*. See
+            // `WindowManager::native_fullscreen_in_front`.
+            if wm.native_fullscreen_in_front() {
+                // Grep marker: RECONCILE.
+                tracing::warn!(
+                    "RECONCILE declined: a full-screen space is in front; staying on {focused_monitor_idx}/{focused_workspace_idx}"
+                );
+
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                LAST_RECONCILIATION.store(now, Ordering::SeqCst);
+                RECONCILIATION_IN_PROGRESS.store(false, Ordering::Relaxed);
+                continue;
+            }
+
             tracing::warn!(
                 "RECONCILE acting: {focused_monitor_idx}/{focused_workspace_idx} -> {}/{}",
                 notification.monitor_idx,
